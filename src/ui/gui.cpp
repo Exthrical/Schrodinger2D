@@ -238,25 +238,33 @@ static void draw_settings(AppState& app) {
     ImGui::Text("Boxes");
     {
         double vmin, vmax;
-        vmin=-1000.0; vmax=1000.0; ImGui::SliderScalar("Height", ImGuiDataType_Double, &app.boxHeight, &vmin, &vmax, "%.2f");
-        vmin=0.0; vmax=5.0; ImGui::SliderScalar("CAP strength", ImGuiDataType_Double, &app.sim.pfield.cap_strength, &vmin, &vmax, "%.2f");
-        vmin=0.02; vmax=0.25; ImGui::SliderScalar("CAP ratio", ImGuiDataType_Double, &app.sim.pfield.cap_ratio, &vmin, &vmax, "%.3f");
+        bool changed_any = false;
+        // If a box is selected, edit its height directly; otherwise set default for new boxes.
+        if (app.selectedBox >= 0 && app.selectedBox < (int)app.sim.pfield.boxes.size()) {
+            auto& b = app.sim.pfield.boxes[app.selectedBox];
+            vmin=-1000.0; vmax=1000.0; if (ImGui::SliderScalar("Selected height", ImGuiDataType_Double, &b.height, &vmin, &vmax, "%.2f")) changed_any = true;
+        } else {
+            vmin=-1000.0; vmax=1000.0; ImGui::SliderScalar("New box height", ImGuiDataType_Double, &app.boxHeight, &vmin, &vmax, "%.2f");
+        }
+        vmin=0.0; vmax=5.0; if (ImGui::SliderScalar("CAP strength", ImGuiDataType_Double, &app.sim.pfield.cap_strength, &vmin, &vmax, "%.2f")) changed_any = true;
+        vmin=0.02; vmax=0.25; if (ImGui::SliderScalar("CAP ratio", ImGuiDataType_Double, &app.sim.pfield.cap_ratio, &vmin, &vmax, "%.3f")) changed_any = true;
+        if (changed_any) app.sim.pfield.build(app.sim.V);
     }
-    if (ImGui::Button("Rebuild V")) app.sim.pfield.build(app.sim.V);
+    if (ImGui::Button("Rebuild V & Reset")) app.sim.reset();
     if (!app.sim.pfield.boxes.empty()) {
         ImGui::Text("%d box(es)", (int)app.sim.pfield.boxes.size());
         if (app.selectedBox >= 0 && app.selectedBox < (int)app.sim.pfield.boxes.size()) {
             auto& b = app.sim.pfield.boxes[app.selectedBox];
             ImGui::Text("Selected #%d", app.selectedBox);
-            ImGui::DragScalarN("Rect [x0,y0,x1,y1]", ImGuiDataType_Double, &b.x0, 4, 0.001f, nullptr, nullptr);
-            ImGui::DragScalar("Height", ImGuiDataType_Double, &b.height, 0.1f);
+            if (ImGui::DragScalarN("Rect [x0,y0,x1,y1]", ImGuiDataType_Double, &b.x0, 4, 0.001f)) app.sim.pfield.build(app.sim.V);
+            if (ImGui::DragScalar("Height", ImGuiDataType_Double, &b.height, 0.1f)) app.sim.pfield.build(app.sim.V);
             if (ImGui::Button("Delete selected [Del]")) {
                 app.sim.pfield.boxes.erase(app.sim.pfield.boxes.begin() + app.selectedBox);
                 app.selectedBox = -1;
-                app.sim.pfield.build(app.sim.V);
+                app.sim.reset();
             }
         }
-        ImGui::SameLine(); if (ImGui::Button("Clear boxes")) { app.sim.pfield.boxes.clear(); app.sim.pfield.build(app.sim.V); app.selectedBox = -1; }
+        ImGui::SameLine(); if (ImGui::Button("Clear boxes")) { app.sim.pfield.boxes.clear(); app.sim.reset(); app.selectedBox = -1; }
     }
     if (!app.sim.packets.empty()) {
         if (ImGui::Button("Clear packets")) { app.sim.packets.clear(); app.sim.reset(); }
