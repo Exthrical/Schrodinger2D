@@ -260,7 +260,7 @@ static void draw_settings(AppState& app) {
 
         ImGui::Separator();
         ImGui::TextUnformatted("New box");
-        vmin = -1000.0; vmax = 1000.0;
+        vmin = -4000.0; vmax = 4000.0;
         ImGui::SliderScalar("Height", ImGuiDataType_Double, &app.boxHeight, &vmin, &vmax, "%.1f");
     }
 
@@ -535,7 +535,7 @@ static void draw_object_editors(AppState& app) {
                     b.y1 = std::clamp(rect[3], 0.0, 1.0);
                     rebuild = true;
                 }
-                double hmin = -1000.0, hmax = 1000.0;
+                double hmin = -4000.0, hmax = 4000.0;
                 if (ImGui::SliderScalar("Height", ImGuiDataType_Double, &b.height, &hmin, &hmax, "%.2f")) {
                     rebuild = true;
                 }
