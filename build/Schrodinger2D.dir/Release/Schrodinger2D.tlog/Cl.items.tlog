@@ -1,0 +1,12 @@
+C:\Users\deera\Codex\Schrodinger2D\src\main.cpp;C:\Users\deera\Codex\Schrodinger2D\build\Schrodinger2D.dir\Release\main.obj
+C:\Users\deera\Codex\Schrodinger2D\src\sim\potential.cpp;C:\Users\deera\Codex\Schrodinger2D\build\Schrodinger2D.dir\Release\potential.obj
+C:\Users\deera\Codex\Schrodinger2D\src\sim\simulation.cpp;C:\Users\deera\Codex\Schrodinger2D\build\Schrodinger2D.dir\Release\simulation.obj
+C:\Users\deera\Codex\Schrodinger2D\src\sim\solver.cpp;C:\Users\deera\Codex\Schrodinger2D\build\Schrodinger2D.dir\Release\solver.obj
+C:\Users\deera\Codex\Schrodinger2D\src\io\scene.cpp;C:\Users\deera\Codex\Schrodinger2D\build\Schrodinger2D.dir\Release\scene.obj
+C:\Users\deera\Codex\Schrodinger2D\src\ui\gui.cpp;C:\Users\deera\Codex\Schrodinger2D\build\Schrodinger2D.dir\Release\gui.obj
+C:\Users\deera\Codex\Schrodinger2D\third_party\imgui\imgui.cpp;C:\Users\deera\Codex\Schrodinger2D\build\Schrodinger2D.dir\Release\imgui.obj
+C:\Users\deera\Codex\Schrodinger2D\third_party\imgui\imgui_draw.cpp;C:\Users\deera\Codex\Schrodinger2D\build\Schrodinger2D.dir\Release\imgui_draw.obj
+C:\Users\deera\Codex\Schrodinger2D\third_party\imgui\imgui_tables.cpp;C:\Users\deera\Codex\Schrodinger2D\build\Schrodinger2D.dir\Release\imgui_tables.obj
+C:\Users\deera\Codex\Schrodinger2D\third_party\imgui\imgui_widgets.cpp;C:\Users\deera\Codex\Schrodinger2D\build\Schrodinger2D.dir\Release\imgui_widgets.obj
+C:\Users\deera\Codex\Schrodinger2D\third_party\imgui\backends\imgui_impl_glfw.cpp;C:\Users\deera\Codex\Schrodinger2D\build\Schrodinger2D.dir\Release\imgui_impl_glfw.obj
+C:\Users\deera\Codex\Schrodinger2D\third_party\imgui\backends\imgui_impl_opengl2.cpp;C:\Users\deera\Codex\Schrodinger2D\build\Schrodinger2D.dir\Release\imgui_impl_opengl2.obj

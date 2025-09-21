@@ -1,7 +1,4 @@
-/mnt/c/Users/deera/Codex/Schrodinger2D/build/CMakeFiles/Schrodinger2D.dir
-/mnt/c/Users/deera/Codex/Schrodinger2D/build/CMakeFiles/edit_cache.dir
-/mnt/c/Users/deera/Codex/Schrodinger2D/build/CMakeFiles/rebuild_cache.dir
-/mnt/c/Users/deera/Codex/Schrodinger2D/build/CMakeFiles/list_install_components.dir
-/mnt/c/Users/deera/Codex/Schrodinger2D/build/CMakeFiles/install.dir
-/mnt/c/Users/deera/Codex/Schrodinger2D/build/CMakeFiles/install/local.dir
-/mnt/c/Users/deera/Codex/Schrodinger2D/build/CMakeFiles/install/strip.dir
+C:/Users/deera/Codex/Schrodinger2D/build/CMakeFiles/Schrodinger2D.dir
+C:/Users/deera/Codex/Schrodinger2D/build/CMakeFiles/INSTALL.dir
+C:/Users/deera/Codex/Schrodinger2D/build/CMakeFiles/ALL_BUILD.dir
+C:/Users/deera/Codex/Schrodinger2D/build/CMakeFiles/ZERO_CHECK.dir
