@@ -12,10 +12,10 @@ namespace sim {
 enum class ViewMode { MagnitudePhase, Real, Imag, Magnitude, Phase };
 
 struct Simulation {
-    int Nx{128}, Ny{128};
+    int Nx{300}, Ny{300};
     double Lx{1.0}, Ly{1.0};      // physical domain size (arbitrary units)
     double dx{Lx/Nx}, dy{Ly/Ny};  // grid spacing
-    double dt{0.001};
+    double dt{0.00025};
     bool running{false};
 
     // Fields

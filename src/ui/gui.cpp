@@ -38,7 +38,7 @@ struct AppState {
     double packetKy{0.0};
 
     // Box placement defaults
-    double boxHeight{200.0};
+    double boxHeight{2400.0};
 
     // Interaction state
     enum class Mode { Select, AddPacket, AddBox } mode{Mode::Select};
@@ -620,17 +620,42 @@ int run_gui(GLFWwindow* window) {
     // Setup Dear ImGui context
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
-    ImGuiIO& io = ImGui::GetIO(); (void)io;
+    ImGuiIO& io = ImGui::GetIO();
+
+    // Aesthetics
+    ImFontConfig cfg;
+    cfg.OversampleH = 3;
+    cfg.OversampleV = 3;
+    cfg.PixelSnapH = false;
+
+    io.Fonts->Clear();
+
+    std::string fontPath = "third_party/imgui/misc/fonts/Roboto-Medium.ttf";
+    #ifdef PROJECT_SOURCE_DIR
+    fontPath = std::string(PROJECT_SOURCE_DIR) + "/third_party/imgui/misc/fonts/Roboto-Medium.ttf";
+    #endif
+
+    ImFont* roboto = io.Fonts->AddFontFromFileTTF(fontPath.c_str(), 16.0f, &cfg);
+    if (!roboto) {
+        // fall back if the file isn’t found (e.g. bad path)
+        roboto = io.Fonts->AddFontDefault();
+    }
+
+    io.Fonts->Build();
+    io.FontGlobalScale = 1.0f;
+
     ImGui::StyleColorsDark();
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL2_Init();
 
     AppState app;
-    // Load a quick default example: central barrier and right-moving packet
-    app.sim.pfield.boxes.push_back(sim::Box{0.48, 0.0, 0.52, 1.0, 200.0});
+    // Load a quick default example: central barrier and two right-moving packets
+    app.sim.pfield.boxes.push_back(sim::Box{0.48, 0.0, 0.52, 1.0, 2400.0});
     app.sim.pfield.build(app.sim.V);
-    sim::Packet p{0.25, 0.5, 0.05, 1.0, 12.0, 0.0};
-    app.sim.packets.push_back(p);
+    sim::Packet p1{0.25, 0.75, 0.05, 1.0, 10.0, -1.0};
+    app.sim.packets.push_back(p1);
+    sim::Packet p2{0.25, 0.25, 0.05, 1.0, 42.0, 4.0};
+    app.sim.packets.push_back(p2);
     app.sim.reset();
 
     // Main loop

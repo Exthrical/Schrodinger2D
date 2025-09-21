@@ -47,6 +47,8 @@ target_include_directories(Schrodinger2D PRIVATE
     ${IMGUI_DIR}/backends
 )
 
+target_compile_definitions(Schrodinger2D PRIVATE PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
+
 # Try to find GUI deps
 set(HAVE_GUI OFF)
 if(ENABLE_GUI)
