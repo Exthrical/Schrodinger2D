@@ -72,3 +72,10 @@ int main(int argc, char** argv) {
     return 1;
 #endif
 }
+
+#if defined(_WIN32) && BUILD_GUI
+#include <windows.h>
+int APIENTRY WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
+    return main(__argc, __argv);
+}
+#endif
