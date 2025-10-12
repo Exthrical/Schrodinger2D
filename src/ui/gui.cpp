@@ -34,6 +34,11 @@
 
 namespace {
 
+static constexpr float kPacketHandleRadiusPx = 9.0f;
+static constexpr float kMomentumHandleRadiusPx = 12.0f;
+static constexpr float kMomentumUVScale = 0.004f;
+static constexpr float kDragThresholdPx = 4.0f;
+
 struct AppState {
     sim::Simulation sim;
     sim::ViewMode view{sim::ViewMode::MagnitudePhase};
@@ -50,12 +55,20 @@ struct AppState {
     double boxHeight{2400.0};
 
     // Interaction state
-    enum class Mode { Select, AddPacket, AddBox } mode{Mode::Select};
+    enum class Mode { Drag, AddPacket, AddBox } mode{Mode::Drag};
+    enum class DragAction { None, MoveBox, MovePacket, AdjustPacketMomentum, AddBox, AddPacket };
+    DragAction dragAction{DragAction::None};
     int selectedBox{-1};
     int selectedPacket{-1};
-    bool dragging{false};
+    int activeDragPacket{-1};
+    bool pendingPacketClick{false};
+    bool packetDragDirty{false};
     ImVec2 dragStart{0,0};
     ImVec2 dragEnd{0,0};
+    double packetDragStartCx{0.0};
+    double packetDragStartCy{0.0};
+    double packetDragStartKx{0.0};
+    double packetDragStartKy{0.0};
 
     bool boxEditorOpen{false};
     bool packetEditorOpen{false};
@@ -153,6 +166,17 @@ static ImVec4 Darken(const ImVec4& c, float amount) {
     float h, s, v;
     ImGui::ColorConvertRGBtoHSV(c.x, c.y, c.z, h, s, v);
     v = v * (1.0f - amount);
+    ImVec4 out;
+    ImGui::ColorConvertHSVtoRGB(h, s, v, out.x, out.y, out.z);
+    out.w = c.w;
+    return out;
+}
+
+static ImVec4 Lighten(const ImVec4& c, float amount) {
+    // amount: 0 = no change, 1 = full bright white
+    float h, s, v;
+    ImGui::ColorConvertRGBtoHSV(c.x, c.y, c.z, h, s, v);
+    v = v + (1.0f - v) * amount;
     ImVec4 out;
     ImGui::ColorConvertHSVtoRGB(h, s, v, out.x, out.y, out.z);
     out.w = c.w;
@@ -357,6 +381,16 @@ static void take_screenshot(AppState& app) {
 }
 
 static void draw_object_editors(AppState& app);
+static void draw_tools_panel(AppState& app);
+
+static const char* tool_mode_name(AppState::Mode mode) {
+    switch (mode) {
+        case AppState::Mode::Drag: return "Drag";
+        case AppState::Mode::AddPacket: return "Add Packet";
+        case AppState::Mode::AddBox: return "Add Box";
+        default: return "Unknown";
+    }
+}
 
 static void draw_settings(AppState& app) {
     // For the 4 main controls: Slightly larger padding and a visible border
@@ -415,11 +449,8 @@ static void draw_settings(AppState& app) {
     ImGui::Separator();
 
     ImGui::Text("Tools");
-    int mode = static_cast<int>(app.mode);
-    const char* omodes[] = {"Select/Move Boxes", "Add Packet", "Add Box"};
-    if (ImGui::Combo("Tool", &mode, omodes, IM_ARRAYSIZE(omodes))) {
-        app.mode = static_cast<AppState::Mode>(mode);
-    }
+    ImGui::Text("Active: %s", tool_mode_name(app.mode));
+    ImGui::TextDisabled("Use the toolbar on the right to change.");
 
     ImGui::Separator();
     if (ImGui::CollapsingHeader("Placement Defaults", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -489,6 +520,85 @@ static void draw_settings(AppState& app) {
     }
 }
 
+static void draw_tools_panel(AppState& app) {
+    ImGuiStyle& style = ImGui::GetStyle();
+
+    ImGui::TextUnformatted("Tools");
+    ImGui::Separator();
+    ImGui::Spacing();
+
+    const ImVec4 base = style.Colors[ImGuiCol_ChildBg];
+    const ImVec4 hover = Lighten(base, 0.2f);
+    const ImVec4 activeFill = style.Colors[ImGuiCol_Header];
+    const ImVec4 border = style.Colors[ImGuiCol_Border];
+    const ImVec4 borderActive = style.Colors[ImGuiCol_PlotLines];
+    const ImVec4 text = style.Colors[ImGuiCol_Text];
+    const ImVec4 subtext = style.Colors[ImGuiCol_TextDisabled];
+
+    struct ToolEntry {
+        AppState::Mode mode;
+        const char* title;
+        const char* subtitle;
+        const char* tooltip;
+    };
+
+    static const ToolEntry tools[] = {
+        {AppState::Mode::Drag,      "DRAG",   "Move / Edit",    "Drag boxes, packets, and adjust momentum"},
+        {AppState::Mode::AddPacket, "PACKET", "Insert",         "Click-drag in the field to place a packet"},
+        {AppState::Mode::AddBox,    "BOX",    "Barrier",        "Click-drag to create a potential box"},
+    };
+
+    const int columns = 2;
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(8.0f, 10.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(4.0f, 4.0f));
+    if (ImGui::BeginTable("tool_grid", columns, ImGuiTableFlags_SizingStretchSame)) {
+        for (int idx = 0; idx < IM_ARRAYSIZE(tools); ++idx) {
+            if (idx % columns == 0)
+                ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(idx % columns);
+            ImGui::PushID(idx);
+
+            ImVec2 tileSize(std::max(0.0f, ImGui::GetContentRegionAvail().x), 92.0f);
+            ImVec2 tileMin = ImGui::GetCursorScreenPos();
+            ImGui::InvisibleButton("tool_tile", tileSize);
+            bool hovered = ImGui::IsItemHovered();
+            bool clicked = ImGui::IsItemClicked();
+            bool active = (app.mode == tools[idx].mode);
+
+            ImVec4 fill = active ? activeFill : (hovered ? hover : base);
+            ImVec4 outline = active ? borderActive : border;
+            float outlineThickness = active ? 2.0f : 1.0f;
+            ImVec2 tileMax = tileMin + tileSize;
+
+            ImDrawList* dl = ImGui::GetWindowDrawList();
+            dl->AddRectFilled(tileMin, tileMax, ImGui::GetColorU32(fill), 6.0f);
+            dl->AddRect(tileMin, tileMax, ImGui::GetColorU32(outline), 6.0f, 0, outlineThickness);
+
+            ImGui::SetCursorScreenPos(tileMin + ImVec2(14.0f, 18.0f));
+            ImGui::PushStyleColor(ImGuiCol_Text, text);
+            ImGui::TextUnformatted(tools[idx].title);
+            ImGui::PopStyleColor();
+
+            ImGui::SetCursorScreenPos(tileMin + ImVec2(14.0f, tileSize.y - 28.0f));
+            ImGui::PushStyleColor(ImGuiCol_Text, subtext);
+            ImGui::TextUnformatted(tools[idx].subtitle);
+            ImGui::PopStyleColor();
+
+            ImGui::SetCursorScreenPos(ImVec2(tileMin.x, tileMax.y));
+
+            if (clicked && app.mode != tools[idx].mode) {
+                app.mode = tools[idx].mode;
+            }
+            if (hovered && tools[idx].tooltip)
+                ImGui::SetTooltip("%s", tools[idx].tooltip);
+
+            ImGui::PopID();
+        }
+        ImGui::EndTable();
+    }
+    ImGui::PopStyleVar(2);
+}
+
 static void draw_view_content(AppState& app) {
     ImVec2 avail = ImGui::GetContentRegionAvail();
     ImVec2 target = fit_size_keep_aspect(ImVec2((float)app.sim.Nx, (float)app.sim.Ny), avail);
@@ -520,44 +630,119 @@ static void draw_view_content(AppState& app) {
         dl->AddRect(top_left, bottom_right, col, 0.0f, 0, thickness);
     }
 
-    for (size_t pi = 0; pi < app.sim.packets.size(); ++pi) {
+    struct PacketVisual {
+        int idx;
+        ImVec2 centerUV;
+        ImVec2 centerScreen;
+        ImVec2 tipUV;
+        ImVec2 tipScreen;
+    };
+    std::vector<PacketVisual> packetVis;
+    packetVis.reserve(app.sim.packets.size());
+    for (int pi = 0; pi < (int)app.sim.packets.size(); ++pi) {
         const auto& pkt = app.sim.packets[pi];
-        ImVec2 center = uv_to_screen(ImVec2((float)pkt.cx, (float)pkt.cy), tl, br);
-        bool selected = (static_cast<int>(pi) == app.selectedPacket);
-        float radius = selected ? 8.0f : 6.0f;
-        ImU32 outline = selected ? make_rgba(0.2f, 0.9f, 1.0f, 0.95f) : make_rgba(0.2f, 0.6f, 1.0f, 0.8f);
-        dl->AddCircle(center, radius, outline, 0, selected ? 3.0f : 2.0f);
-        dl->AddCircleFilled(center, radius * 0.4f, make_rgba(0.2f, 0.6f, 1.0f, 0.8f));
+        PacketVisual pv;
+        pv.idx = pi;
+        pv.centerUV = ImVec2((float)pkt.cx, (float)pkt.cy);
+        pv.centerScreen = uv_to_screen(pv.centerUV, tl, br);
+        ImVec2 momentumDeltaUV = ImVec2((float)pkt.kx, (float)pkt.ky) * kMomentumUVScale;
+        pv.tipUV = pv.centerUV + momentumDeltaUV;
+        pv.tipScreen = uv_to_screen(pv.tipUV, tl, br);
+        packetVis.push_back(pv);
     }
 
     ImGuiIO& io = ImGui::GetIO();
     bool hovered = ImGui::IsItemHovered();
+    int hoveredMomentumIdx = -1;
+    int hoveredPacketIdx = -1;
+    if (hovered) {
+        float bestMomentum = kMomentumHandleRadiusPx * kMomentumHandleRadiusPx;
+        float bestCenter = kPacketHandleRadiusPx * kPacketHandleRadiusPx;
+        for (const auto& pv : packetVis) {
+            float dx = pv.tipScreen.x - io.MousePos.x;
+            float dy = pv.tipScreen.y - io.MousePos.y;
+            float dist2 = dx * dx + dy * dy;
+            if (dist2 <= bestMomentum) {
+                bestMomentum = dist2;
+                hoveredMomentumIdx = pv.idx;
+            }
+            dx = pv.centerScreen.x - io.MousePos.x;
+            dy = pv.centerScreen.y - io.MousePos.y;
+            dist2 = dx * dx + dy * dy;
+            if (dist2 <= bestCenter) {
+                bestCenter = dist2;
+                hoveredPacketIdx = pv.idx;
+            }
+        }
+    }
+
+    for (const auto& pv : packetVis) {
+        bool selected = (app.selectedPacket == pv.idx);
+        bool centerHover = (hoveredPacketIdx == pv.idx && app.mode == AppState::Mode::Drag);
+        bool momentumHover = (hoveredMomentumIdx == pv.idx && app.mode == AppState::Mode::Drag);
+
+        float radius = selected ? 8.0f : 6.0f;
+        if (centerHover) radius += 1.5f;
+        ImU32 outline = selected ? make_rgba(0.2f, 0.9f, 1.0f, 0.95f) : make_rgba(0.2f, 0.6f, 1.0f, 0.8f);
+        float thickness = selected ? 3.0f : 2.0f;
+        dl->AddCircle(pv.centerScreen, radius, outline, 0, thickness);
+        dl->AddCircleFilled(pv.centerScreen, radius * 0.4f, make_rgba(0.2f, 0.6f, 1.0f, 0.8f));
+
+        ImVec2 tip = pv.tipScreen;
+        ImVec2 dir = tip - pv.centerScreen;
+        float len = std::sqrt(dir.x * dir.x + dir.y * dir.y);
+        ImU32 arrowColor = selected ? make_rgba(0.95f, 0.35f, 0.25f, 0.95f) : make_rgba(0.25f, 0.75f, 1.0f, 0.9f);
+        if (momentumHover) arrowColor = make_rgba(1.0f, 0.6f, 0.3f, 0.95f);
+        float lineThickness = selected ? 2.6f : 1.9f;
+        if (len > 1e-3f) {
+            dl->AddLine(pv.centerScreen, tip, arrowColor, lineThickness);
+            ImVec2 dirNorm = dir * (1.0f / len);
+            ImVec2 ortho(-dirNorm.y, dirNorm.x);
+            float headLen = 10.0f;
+            float headWidth = 6.0f;
+            ImVec2 head = tip;
+            ImVec2 p2 = head - dirNorm * headLen + ortho * headWidth;
+            ImVec2 p3 = head - dirNorm * headLen - ortho * headWidth;
+            dl->AddTriangleFilled(head, p2, p3, arrowColor);
+        }
+        float handleRadius = momentumHover ? kMomentumHandleRadiusPx + 2.0f : kMomentumHandleRadiusPx;
+        dl->AddCircleFilled(tip, handleRadius * 0.45f, arrowColor);
+        dl->AddCircle(tip, handleRadius * 0.65f, arrowColor, 0, 1.5f);
+    }
+
+    ImVec2 mouseUV = screen_to_uv(io.MousePos, tl, br);
+
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         app.dragStart = io.MousePos;
         app.dragEnd = io.MousePos;
-        app.dragging = false;
+        app.dragAction = AppState::DragAction::None;
+        app.activeDragPacket = -1;
+        app.pendingPacketClick = false;
+        app.packetDragDirty = false;
 
-        if (app.mode == AppState::Mode::Select) {
-            const float packetPickRadius = 12.0f;
-            int packetHit = -1;
-            for (int pi = static_cast<int>(app.sim.packets.size()) - 1; pi >= 0; --pi) {
-                ImVec2 center = uv_to_screen(ImVec2((float)app.sim.packets[pi].cx, (float)app.sim.packets[pi].cy), tl, br);
-                float dx = center.x - io.MousePos.x;
-                float dy = center.y - io.MousePos.y;
-                if (dx * dx + dy * dy <= packetPickRadius * packetPickRadius) {
-                    packetHit = pi;
-                    break;
-                }
-            }
-
-            if (packetHit >= 0) {
-                app.selectedPacket = packetHit;
-                app.packetEditorOpen = true;
-                app.packetEditorPos = io.MousePos + ImVec2(16, 16);
+        if (app.mode == AppState::Mode::Drag) {
+            if (hoveredMomentumIdx >= 0) {
+                app.selectedPacket = hoveredMomentumIdx;
                 app.selectedBox = -1;
                 app.boxEditorOpen = false;
+                app.packetEditorOpen = false;
+                app.activeDragPacket = hoveredMomentumIdx;
+                app.dragAction = AppState::DragAction::AdjustPacketMomentum;
+                const auto& pkt = app.sim.packets[hoveredMomentumIdx];
+                app.packetDragStartKx = pkt.kx;
+                app.packetDragStartKy = pkt.ky;
+            } else if (hoveredPacketIdx >= 0) {
+                app.selectedPacket = hoveredPacketIdx;
+                app.selectedBox = -1;
+                app.boxEditorOpen = false;
+                app.activeDragPacket = hoveredPacketIdx;
+                app.dragAction = AppState::DragAction::MovePacket;
+                const auto& pkt = app.sim.packets[hoveredPacketIdx];
+                app.packetDragStartCx = pkt.cx;
+                app.packetDragStartCy = pkt.cy;
+                app.packetEditorOpen = false;
+                app.pendingPacketClick = true;
             } else {
-                ImVec2 uv = screen_to_uv(io.MousePos, tl, br);
                 int boxHit = -1;
                 for (int bi = static_cast<int>(app.sim.pfield.boxes.size()) - 1; bi >= 0; --bi) {
                     const auto& b = app.sim.pfield.boxes[bi];
@@ -565,7 +750,7 @@ static void draw_view_content(AppState& app) {
                     double maxx = std::max(b.x0, b.x1);
                     double miny = std::min(b.y0, b.y1);
                     double maxy = std::max(b.y0, b.y1);
-                    if (uv.x >= minx && uv.x <= maxx && uv.y >= miny && uv.y <= maxy) {
+                    if (mouseUV.x >= minx && mouseUV.x <= maxx && mouseUV.y >= miny && mouseUV.y <= maxy) {
                         boxHit = bi;
                         break;
                     }
@@ -574,9 +759,9 @@ static void draw_view_content(AppState& app) {
                     app.selectedBox = boxHit;
                     app.boxEditorOpen = true;
                     app.boxEditorPos = io.MousePos + ImVec2(16, 16);
-                    app.dragging = true;
                     app.selectedPacket = -1;
                     app.packetEditorOpen = false;
+                    app.dragAction = AppState::DragAction::MoveBox;
                 } else {
                     app.selectedBox = -1;
                     app.boxEditorOpen = false;
@@ -584,27 +769,72 @@ static void draw_view_content(AppState& app) {
                     app.packetEditorOpen = false;
                 }
             }
-        } else {
-            app.dragging = true;
+        } else if (app.mode == AppState::Mode::AddBox) {
+            app.dragAction = AppState::DragAction::AddBox;
+        } else if (app.mode == AppState::Mode::AddPacket) {
+            app.dragAction = AppState::DragAction::AddPacket;
         }
     }
-    if (app.dragging && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+
+    if (app.dragAction != AppState::DragAction::None && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
         app.dragEnd = io.MousePos;
-        if (app.mode == AppState::Mode::Select && app.selectedBox >= 0) {
-            ImVec2 uv0 = screen_to_uv(app.dragStart, tl, br);
-            ImVec2 uv1 = screen_to_uv(app.dragEnd, tl, br);
-            ImVec2 d = uv1 - uv0;
-            auto& b = app.sim.pfield.boxes[app.selectedBox];
-            b.x0 += d.x; b.x1 += d.x;
-            b.y0 += d.y; b.y1 += d.y;
-            app.dragStart = app.dragEnd;
-            app.sim.pfield.build(app.sim.V);
+
+        switch (app.dragAction) {
+        case AppState::DragAction::MoveBox: {
+            if (app.selectedBox >= 0 && app.selectedBox < static_cast<int>(app.sim.pfield.boxes.size())) {
+                ImVec2 uv0 = screen_to_uv(app.dragStart, tl, br);
+                ImVec2 uv1 = screen_to_uv(app.dragEnd, tl, br);
+                ImVec2 d = uv1 - uv0;
+                auto& b = app.sim.pfield.boxes[app.selectedBox];
+                b.x0 += d.x; b.x1 += d.x;
+                b.y0 += d.y; b.y1 += d.y;
+                app.dragStart = app.dragEnd;
+                app.sim.pfield.build(app.sim.V);
+            }
+            break;
+        }
+        case AppState::DragAction::MovePacket: {
+            if (app.activeDragPacket >= 0 && app.activeDragPacket < static_cast<int>(app.sim.packets.size())) {
+                float dx = io.MousePos.x - app.dragStart.x;
+                float dy = io.MousePos.y - app.dragStart.y;
+                if (app.pendingPacketClick) {
+                    if ((dx * dx + dy * dy) >= kDragThresholdPx * kDragThresholdPx) {
+                        app.pendingPacketClick = false;
+                    }
+                }
+                if (!app.pendingPacketClick) {
+                    auto& pkt = app.sim.packets[app.activeDragPacket];
+                    ImVec2 uv = screen_to_uv(io.MousePos, tl, br);
+                    pkt.cx = std::clamp((double)uv.x, 0.0, 1.0);
+                    pkt.cy = std::clamp((double)uv.y, 0.0, 1.0);
+                    app.packetDragDirty = true;
+                }
+            }
+            break;
+        }
+        case AppState::DragAction::AdjustPacketMomentum: {
+            if (app.activeDragPacket >= 0 && app.activeDragPacket < static_cast<int>(app.sim.packets.size())) {
+                auto& pkt = app.sim.packets[app.activeDragPacket];
+                ImVec2 centerUV((float)pkt.cx, (float)pkt.cy);
+                ImVec2 currentUV = screen_to_uv(io.MousePos, tl, br);
+                ImVec2 deltaUV = currentUV - centerUV;
+                pkt.kx = deltaUV.x / kMomentumUVScale;
+                pkt.ky = deltaUV.y / kMomentumUVScale;
+                app.packetDragDirty = true;
+            }
+            break;
+        }
+        default:
+            break;
         }
     }
-    if (app.dragging && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+
+    if (app.dragAction != AppState::DragAction::None && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
         ImVec2 uv0 = screen_to_uv(app.dragStart, tl, br);
         ImVec2 uv1 = screen_to_uv(app.dragEnd, tl, br);
-        if (app.mode == AppState::Mode::AddBox) {
+
+        switch (app.dragAction) {
+        case AppState::DragAction::AddBox: {
             sim::Box b;
             b.x0 = std::clamp((double)uv0.x, 0.0, 1.0);
             b.y0 = std::clamp((double)uv0.y, 0.0, 1.0);
@@ -618,7 +848,9 @@ static void draw_view_content(AppState& app) {
             app.boxEditorPos = io.MousePos + ImVec2(16, 16);
             app.selectedPacket = -1;
             app.packetEditorOpen = false;
-        } else if (app.mode == AppState::Mode::AddPacket) {
+            break;
+        }
+        case AppState::DragAction::AddPacket: {
             ImVec2 uv_center = screen_to_uv(app.dragStart, tl, br);
             ImVec2 uv_release = screen_to_uv(app.dragEnd, tl, br);
             sim::Packet p;
@@ -642,11 +874,33 @@ static void draw_view_content(AppState& app) {
             app.packetEditorPos = io.MousePos + ImVec2(16, 16);
             app.selectedBox = -1;
             app.boxEditorOpen = false;
+            break;
         }
-        app.dragging = false;
+        case AppState::DragAction::MovePacket:
+            if (app.pendingPacketClick && app.activeDragPacket >= 0) {
+                app.selectedPacket = app.activeDragPacket;
+                app.packetEditorOpen = true;
+                app.packetEditorPos = io.MousePos + ImVec2(16, 16);
+            } else if (app.packetDragDirty) {
+                app.sim.reset();
+            }
+            break;
+        case AppState::DragAction::AdjustPacketMomentum:
+            if (app.packetDragDirty) {
+                app.sim.reset();
+            }
+            break;
+        default:
+            break;
+        }
+
+        app.dragAction = AppState::DragAction::None;
+        app.activeDragPacket = -1;
+        app.pendingPacketClick = false;
+        app.packetDragDirty = false;
     }
 
-    if (app.dragging && (app.mode == AppState::Mode::AddBox || app.mode == AppState::Mode::AddPacket)) {
+    if ((app.dragAction == AppState::DragAction::AddBox || app.dragAction == AppState::DragAction::AddPacket) && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
         ImU32 col = make_rgba(1, 1, 1, 0.7f);
         dl->AddRect(app.dragStart, app.dragEnd, col, 0.0f, 0, 2.0f);
     }
@@ -950,7 +1204,6 @@ static void draw_top_bar(AppState& app, GLFWwindow* window, float& out_height) {
     ImGui::EndMainMenuBar();
 
     if (app.windowDragActive) {
-        ImGuiIO& io = ImGui::GetIO();
         if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
             ImVec2 delta = io.MousePos - app.windowDragMouseStart;
             int newX = app.windowDragStartX + static_cast<int>(delta.x);
@@ -1025,13 +1278,24 @@ int run_gui(GLFWwindow* window) {
                                       ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
         ImGui::Begin("Schrodinger2D", nullptr, root_flags);
         const float left_w = 360.0f; // fixed settings panel width
+        const float tools_w = 264.0f;
+
         ImGui::BeginChild("SettingsPanel", ImVec2(left_w, 0), true);
         draw_settings(app);
         ImGui::EndChild();
         ImGui::SameLine();
-        ImGui::BeginChild("ViewPanel", ImVec2(0, 0), true);
+        ImGui::BeginGroup();
+        ImVec2 rightAvail = ImGui::GetContentRegionAvail();
+        float spacing = ImGui::GetStyle().ItemSpacing.x;
+        float viewWidth = std::max(0.0f, rightAvail.x - tools_w - spacing);
+        ImGui::BeginChild("ViewPanel", ImVec2(viewWidth, 0), true);
         draw_view_content(app);
         ImGui::EndChild();
+        ImGui::SameLine();
+        ImGui::BeginChild("ToolsPanel", ImVec2(tools_w, 0), true);
+        draw_tools_panel(app);
+        ImGui::EndChild();
+        ImGui::EndGroup();
         ImGui::End();
 
         draw_style_editor(app);
