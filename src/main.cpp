@@ -51,6 +51,8 @@ int main(int argc, char** argv) {
     // Setup window hints suitable for OpenGL2 backend
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 2);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 1);
+    glfwWindowHint(GLFW_DECORATED, GLFW_FALSE);
+    glfwWindowHint(GLFW_MAXIMIZED, GLFW_TRUE);
     GLFWwindow* window = glfwCreateWindow(1280, 800, "Schrodinger2D", nullptr, nullptr);
     if (!window) {
         std::cerr << "Failed to create GLFW window.\n";

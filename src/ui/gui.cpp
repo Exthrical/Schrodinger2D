@@ -19,6 +19,15 @@
 #include <cmath>
 #include <algorithm>
 #include <string>
+#include <filesystem>
+#include <chrono>
+#include <sstream>
+#include <iomanip>
+#include <ctime>
+#include <system_error>
+
+#define STB_IMAGE_WRITE_IMPLEMENTATION
+#include "stb/stb_image_write.h"
 
 #include "sim/simulation.hpp"
 #include "io/scene.hpp"
@@ -53,21 +62,110 @@ struct AppState {
     ImVec2 boxEditorPos{0,0};
     ImVec2 packetEditorPos{0,0};
 
+    bool showStyleEditor{false};
+    float toastTimer{0.0f};
+    std::string toastMessage;
+
+    bool windowDragActive{false};
+    ImVec2 windowDragMouseStart{0.0f, 0.0f};
+    int windowDragStartX{0};
+    int windowDragStartY{0};
+
     // GL texture for field visualization
     GLuint tex{0};
     int texW{0}, texH{0};
 };
 
-static inline ImVec2 operator+(ImVec2 a, ImVec2 b) { return ImVec2(a.x+b.x, a.y+b.y); }
-static inline ImVec2 operator-(ImVec2 a, ImVec2 b) { return ImVec2(a.x-b.x, a.y-b.y); }
-static inline ImVec2 operator*(ImVec2 a, float s) { return ImVec2(a.x*s, a.y*s); }
+static void load_default_scene(AppState& app);
+static void push_toast(AppState& app, const std::string& message, float duration_seconds);
+static bool save_current_view_png(const AppState& app, const std::filesystem::path& path);
+static std::filesystem::path default_screenshot_path();
+static void take_screenshot(AppState& app);
+static inline ImVec2 operator+(ImVec2 a, ImVec2 b) { return ImVec2(a.x + b.x, a.y + b.y); }
+static inline ImVec2 operator-(ImVec2 a, ImVec2 b) { return ImVec2(a.x - b.x, a.y - b.y); }
+static inline ImVec2 operator*(ImVec2 a, float s) { return ImVec2(a.x * s, a.y * s); }
+
+// Custom theme preset helper, mirroring ImGui::StyleColors* API.
+// Applies a dark dashboard-like theme to the current context or the provided style.
+static void StyleColorsDashboard(ImGuiStyle* dst = nullptr) {
+    ImGuiStyle* style = dst ? dst : &ImGui::GetStyle();
+
+    style->WindowRounding = 2.0f;
+    style->FrameRounding = 2.0f;
+    style->GrabRounding = 2.0f;
+    style->WindowBorderSize = 1.0f;
+    style->FrameBorderSize = 1.0f;
+    style->ScrollbarSize = 12.0f;
+    style->ItemSpacing = ImVec2(8, 6);
+    style->ItemInnerSpacing = ImVec2(6, 4);
+    style->FramePadding = ImVec2(10, 6);
+
+    ImVec4 bg0 = ImVec4(0.06f, 0.06f, 0.07f, 1.0f);
+    ImVec4 bg1 = ImVec4(0.09f, 0.09f, 0.10f, 1.0f);
+    ImVec4 bg2 = ImVec4(0.13f, 0.13f, 0.15f, 1.0f);
+    ImVec4 text = ImVec4(0.95f, 0.95f, 0.96f, 1.0f);
+    ImVec4 textMuted = ImVec4(0.75f, 0.75f, 0.78f, 1.0f);
+    ImVec4 border = ImVec4(0.22f, 0.22f, 0.25f, 1.0f);
+    ImVec4 accent = ImVec4(0.95f, 0.25f, 0.20f, 1.0f);
+
+    ImVec4* c = style->Colors;
+    c[ImGuiCol_Text] = text;
+    c[ImGuiCol_TextDisabled] = textMuted;
+    c[ImGuiCol_WindowBg] = bg0;
+    c[ImGuiCol_ChildBg] = bg1;
+    c[ImGuiCol_PopupBg] = bg1;
+    c[ImGuiCol_Border] = border;
+    c[ImGuiCol_FrameBg] = bg2;
+    c[ImGuiCol_FrameBgHovered] = ImVec4(0.18f, 0.18f, 0.20f, 1.0f);
+    c[ImGuiCol_FrameBgActive] = ImVec4(0.22f, 0.22f, 0.25f, 1.0f);
+    c[ImGuiCol_TitleBg] = bg1;
+    c[ImGuiCol_TitleBgActive] = bg2;
+    c[ImGuiCol_MenuBarBg] = bg1;
+    c[ImGuiCol_Button] = ImVec4(0.14f, 0.14f, 0.16f, 1.0f);
+    c[ImGuiCol_ButtonHovered] = ImVec4(0.22f, 0.22f, 0.26f, 1.0f);
+    c[ImGuiCol_ButtonActive] = ImVec4(0.26f, 0.26f, 0.30f, 1.0f);
+    c[ImGuiCol_CheckMark] = accent;
+    c[ImGuiCol_SliderGrab] = accent;
+    c[ImGuiCol_SliderGrabActive] = ImVec4(0.85f, 0.20f, 0.18f, 1.0f);
+    c[ImGuiCol_Header] = ImVec4(0.14f, 0.14f, 0.16f, 1.0f);
+    c[ImGuiCol_HeaderHovered] = ImVec4(0.22f, 0.22f, 0.26f, 1.0f);
+    c[ImGuiCol_HeaderActive] = ImVec4(0.26f, 0.26f, 0.30f, 1.0f);
+    c[ImGuiCol_Separator] = border;
+    c[ImGuiCol_Tab] = bg1;
+    c[ImGuiCol_TabActive] = bg2;
+    c[ImGuiCol_PlotLines] = accent;
+    c[ImGuiCol_NavHighlight] = accent;
+}
+
+static ImVec4 Desaturate(const ImVec4& c, float amount) {
+    // amount: 0 = no change, 1 = fully gray
+    float h, s, v;
+    ImGui::ColorConvertRGBtoHSV(c.x, c.y, c.z, h, s, v);
+    s = s * (1.0f - amount);
+    ImVec4 out;
+    ImGui::ColorConvertHSVtoRGB(h, s, v, out.x, out.y, out.z);
+    out.w = c.w;
+    return out;
+}
+
+static ImVec4 Darken(const ImVec4& c, float amount) {
+    // amount: 0 = no change, 1 = black
+    float h, s, v;
+    ImGui::ColorConvertRGBtoHSV(c.x, c.y, c.z, h, s, v);
+    v = v * (1.0f - amount);
+    ImVec4 out;
+    ImGui::ColorConvertHSVtoRGB(h, s, v, out.x, out.y, out.z);
+    out.w = c.w;
+    return out;
+}
 
 static void ensure_texture(AppState& app, int w, int h) {
     if (app.tex == 0) {
         glGenTextures(1, &app.tex);
     }
     if (app.texW != w || app.texH != h) {
-        app.texW = w; app.texH = h;
+        app.texW = w;
+        app.texH = h;
         glBindTexture(GL_TEXTURE_2D, app.tex);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
@@ -76,19 +174,18 @@ static void ensure_texture(AppState& app, int w, int h) {
     }
 }
 
-static ImU32 make_rgba(float r, float g, float b, float a=1.0f) {
+static ImU32 make_rgba(float r, float g, float b, float a = 1.0f) {
     r = std::clamp(r, 0.0f, 1.0f);
     g = std::clamp(g, 0.0f, 1.0f);
     b = std::clamp(b, 0.0f, 1.0f);
     a = std::clamp(a, 0.0f, 1.0f);
-    return IM_COL32((int)(r*255.0f), (int)(g*255.0f), (int)(b*255.0f), (int)(a*255.0f));
+    return IM_COL32((int)(r * 255.0f), (int)(g * 255.0f), (int)(b * 255.0f), (int)(a * 255.0f));
 }
 
-// Map psi -> RGBA color
 static void render_field_to_rgba(const sim::Simulation& sim, std::vector<unsigned char>& outRGBA,
                                  bool showPotential, sim::ViewMode view, bool normalizeView) {
     const int W = sim.Nx, H = sim.Ny;
-    outRGBA.resize((size_t)W*H*4);
+    outRGBA.resize((size_t)W * H * 4);
     double maxmag = 1.0;
     if (normalizeView) {
         double m = 1e-12;
@@ -97,26 +194,25 @@ static void render_field_to_rgba(const sim::Simulation& sim, std::vector<unsigne
         }
         maxmag = m;
     }
-    // Dynamic potential overlay scaling for visibility across ranges
     double maxVre = 0.0;
     if (showPotential) {
         for (int j = 0; j < H; ++j) {
             for (int i = 0; i < W; ++i) {
-                maxVre = std::max(maxVre, std::abs((double)std::real(sim.V[sim.idx(i,j)])));
+                maxVre = std::max(maxVre, std::abs((double)std::real(sim.V[sim.idx(i, j)])));
             }
         }
     }
-    const double Vscale = (maxVre > 1e-12 ? 0.2 * maxVre : 20.0); // map 20% of max to full tint
+    const double Vscale = (maxVre > 1e-12 ? 0.2 * maxVre : 20.0);
     for (int j = 0; j < H; ++j) {
         for (int i = 0; i < W; ++i) {
-            auto z = sim.psi[sim.idx(i,j)];
-            float r=0,g=0,b=0;
+            auto z = sim.psi[sim.idx(i, j)];
+            float r = 0, g = 0, b = 0;
             if (view == sim::ViewMode::Real) {
                 float v = (float)(0.5 + 0.5 * (std::real(z) / maxmag));
-                r=g=b=v;
+                r = g = b = v;
             } else if (view == sim::ViewMode::Imag) {
                 float v = (float)(0.5 + 0.5 * (std::imag(z) / maxmag));
-                r=g=b=v;
+                r = g = b = v;
             } else if (view == sim::ViewMode::Magnitude) {
                 float v = (float)std::min(1.0, std::abs(z) / maxmag);
                 r = g = b = v;
@@ -126,20 +222,19 @@ static void render_field_to_rgba(const sim::Simulation& sim, std::vector<unsigne
                 float h = (float)((phase + PI) / (2.0 * PI));
                 float s = 1.0f;
                 float v = normalizeView ? 1.0f : (float)std::min(1.0, std::abs(z) / maxmag);
-                // HSV to RGB
                 float c = v * s;
                 float x = c * (1 - (float)std::fabs(std::fmod(h * 6.0f, 2.0f) - 1));
                 float m = v - c;
-                float rr=0,gg=0,bb=0;
+                float rr = 0, gg = 0, bb = 0;
                 int hi = (int)std::floor(h * 6.0f) % 6;
-                if (hi==0)      { rr=c; gg=x; bb=0; }
-                else if (hi==1) { rr=x; gg=c; bb=0; }
-                else if (hi==2) { rr=0; gg=c; bb=x; }
-                else if (hi==3) { rr=0; gg=x; bb=c; }
-                else if (hi==4) { rr=x; gg=0; bb=c; }
-                else            { rr=c; gg=0; bb=x; }
+                if (hi == 0)      { rr = c; gg = x; bb = 0; }
+                else if (hi == 1) { rr = x; gg = c; bb = 0; }
+                else if (hi == 2) { rr = 0; gg = c; bb = x; }
+                else if (hi == 3) { rr = 0; gg = x; bb = c; }
+                else if (hi == 4) { rr = x; gg = 0; bb = c; }
+                else              { rr = c; gg = 0; bb = x; }
                 r = rr + m; g = gg + m; b = bb + m;
-            } else { // MagnitudePhase
+            } else {
                 const double PI = 3.14159265358979323846;
                 double mag = std::abs(z) / maxmag;
                 double phase = std::atan2(std::imag(z), std::real(z));
@@ -149,33 +244,89 @@ static void render_field_to_rgba(const sim::Simulation& sim, std::vector<unsigne
                 float c = v * s;
                 float x = c * (1 - (float)std::fabs(std::fmod(h * 6.0f, 2.0f) - 1));
                 float m = v - c;
-                float rr=0,gg=0,bb=0;
+                float rr = 0, gg = 0, bb = 0;
                 int hi = (int)std::floor(h * 6.0f) % 6;
-                if (hi==0)      { rr=c; gg=x; bb=0; }
-                else if (hi==1) { rr=x; gg=c; bb=0; }
-                else if (hi==2) { rr=0; gg=c; bb=x; }
-                else if (hi==3) { rr=0; gg=x; bb=c; }
-                else if (hi==4) { rr=x; gg=0; bb=c; }
-                else            { rr=c; gg=0; bb=x; }
+                if (hi == 0)      { rr = c; gg = x; bb = 0; }
+                else if (hi == 1) { rr = x; gg = c; bb = 0; }
+                else if (hi == 2) { rr = 0; gg = c; bb = x; }
+                else if (hi == 3) { rr = 0; gg = x; bb = c; }
+                else if (hi == 4) { rr = x; gg = 0; bb = c; }
+                else              { rr = c; gg = 0; bb = x; }
                 r = rr + m; g = gg + m; b = bb + m;
             }
 
-            // Potential overlay as faint red (barrier) / blue (well)
             float a = 1.0f;
             if (showPotential) {
-                auto V = sim.V[sim.idx(i,j)];
+                auto V = sim.V[sim.idx(i, j)];
                 float pv = (float)std::clamp(std::real(V) / Vscale, -1.0, 1.0);
                 if (pv > 0) { r = std::min(1.0f, r + pv * 0.3f); }
                 else if (pv < 0) { b = std::min(1.0f, b + (-pv) * 0.3f); }
             }
 
             size_t k = (size_t)((j * W + i) * 4);
-            outRGBA[k+0] = (unsigned char)std::round(r * 255.0f);
-            outRGBA[k+1] = (unsigned char)std::round(g * 255.0f);
-            outRGBA[k+2] = (unsigned char)std::round(b * 255.0f);
-            outRGBA[k+3] = (unsigned char)std::round(a * 255.0f);
+            outRGBA[k + 0] = (unsigned char)std::round(r * 255.0f);
+            outRGBA[k + 1] = (unsigned char)std::round(g * 255.0f);
+            outRGBA[k + 2] = (unsigned char)std::round(b * 255.0f);
+            outRGBA[k + 3] = (unsigned char)std::round(a * 255.0f);
         }
     }
+}
+
+static void load_default_scene(AppState& app) {
+    app.sim.running = false;
+    app.sim.pfield.boxes.clear();
+    app.sim.packets.clear();
+    app.selectedBox = -1;
+    app.selectedPacket = -1;
+    app.boxEditorOpen = false;
+    app.packetEditorOpen = false;
+
+    app.sim.pfield.boxes.push_back(sim::Box{0.48, 0.0, 0.52, 1.0, 2400.0});
+    app.sim.pfield.build(app.sim.V);
+
+    sim::Packet p1{0.25, 0.75, 0.05, 1.0, 10.0, -1.0};
+    app.sim.packets.push_back(p1);
+    sim::Packet p2{0.25, 0.25, 0.05, 1.0, 42.0, 4.0};
+    app.sim.packets.push_back(p2);
+    app.sim.reset();
+}
+
+static std::filesystem::path default_screenshot_path() {
+#ifdef PROJECT_SOURCE_DIR
+    std::filesystem::path base(PROJECT_SOURCE_DIR);
+#else
+    std::filesystem::path base = std::filesystem::current_path();
+#endif
+    std::filesystem::path dir = base / "screenshots";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+
+    auto now = std::chrono::system_clock::now();
+    std::time_t tt = std::chrono::system_clock::to_time_t(now);
+    std::tm tm{};
+#if defined(_WIN32)
+    localtime_s(&tm, &tt);
+#else
+    localtime_r(&tt, &tm);
+#endif
+    std::ostringstream name;
+    name << "screenshot_" << std::put_time(&tm, "%Y%m%d_%H%M%S");
+
+    std::filesystem::path candidate = dir / (name.str() + ".png");
+    int counter = 1;
+    while (std::filesystem::exists(candidate)) {
+        candidate = dir / (name.str() + "_" + std::to_string(counter++) + ".png");
+    }
+    return candidate;
+}
+
+static bool save_current_view_png(const AppState& app, const std::filesystem::path& path) {
+    if (app.sim.Nx <= 0 || app.sim.Ny <= 0)
+        return false;
+    std::vector<unsigned char> rgba;
+    render_field_to_rgba(app.sim, rgba, app.showPotential, app.view, app.normalizeView);
+    int stride = app.sim.Nx * 4;
+    return stbi_write_png(path.string().c_str(), app.sim.Nx, app.sim.Ny, 4, rgba.data(), stride) != 0;
 }
 
 static ImVec2 fit_size_keep_aspect(ImVec2 content, ImVec2 avail) {
@@ -191,15 +342,33 @@ static ImVec2 uv_to_screen(ImVec2 uv, ImVec2 img_tl, ImVec2 img_br) {
     return ImVec2(img_tl.x + uv.x * (img_br.x - img_tl.x), img_tl.y + uv.y * (img_br.y - img_tl.y));
 }
 
+static void push_toast(AppState& app, const std::string& message, float duration_seconds) {
+    app.toastMessage = message;
+    app.toastTimer = duration_seconds;
+}
+
+static void take_screenshot(AppState& app) {
+    std::filesystem::path target = default_screenshot_path();
+    if (save_current_view_png(app, target)) {
+        push_toast(app, std::string("Saved screenshot to ") + target.string(), 3.0f);
+    } else {
+        push_toast(app, "Failed to save screenshot", 3.0f);
+    }
+}
+
 static void draw_object_editors(AppState& app);
 
 static void draw_settings(AppState& app) {
+    // For the 4 main controls: Slightly larger padding and a visible border
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(14, 6));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 2.0f);
+
     if (ImGui::Button(app.sim.running ? "Pause [Space]" : "Start [Space]")) {
         app.sim.running = !app.sim.running;
     }
     ImGui::SameLine();
     if (ImGui::Button("Step")) app.sim.step();
-    ImGui::SameLine();
+    //Line
     if (ImGui::Button("Reset [R]")) app.sim.reset();
     ImGui::SameLine();
     if (ImGui::Button("Renormalize")) {
@@ -209,6 +378,8 @@ static void draw_settings(AppState& app) {
             for (auto& z : app.sim.psi) z *= s;
         }
     }
+
+    ImGui::PopStyleVar(2);
     {
         double dt_min = 1e-5, dt_max = 5e-3;
         ImGui::SliderScalar("dt", ImGuiDataType_Double, &app.sim.dt, &dt_min, &dt_max, "%.6f", ImGuiSliderFlags_Logarithmic);
@@ -229,7 +400,8 @@ static void draw_settings(AppState& app) {
     double mass = app.sim.mass();
     double left = 0.0, right = 0.0;
     app.sim.mass_split(left, right);
-    ImGui::Text("Mass: %.6f  |  Left: %.6f  Right: %.6f", mass, left, right);
+    ImGui::Text("Mass: %.6f", mass);
+    ImGui::Text("Left: %.6f  Right: %.6f", left, right);
     ImGui::Separator();
 
     ImGui::Text("View");
@@ -317,7 +489,6 @@ static void draw_settings(AppState& app) {
     }
 }
 
-
 static void draw_view_content(AppState& app) {
     ImVec2 avail = ImGui::GetContentRegionAvail();
     ImVec2 target = fit_size_keep_aspect(ImVec2((float)app.sim.Nx, (float)app.sim.Ny), avail);
@@ -336,7 +507,6 @@ static void draw_view_content(AppState& app) {
     ImVec2 tl = cur;
     ImVec2 br = cur + target;
 
-    // Overlay potential boxes and packet markers so they can be picked.
     for (size_t bi = 0; bi < app.sim.pfield.boxes.size(); ++bi) {
         const auto& b = app.sim.pfield.boxes[bi];
         ImVec2 p0 = uv_to_screen(ImVec2((float)b.x0, (float)b.y0), tl, br);
@@ -418,7 +588,6 @@ static void draw_view_content(AppState& app) {
             app.dragging = true;
         }
     }
-
     if (app.dragging && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
         app.dragEnd = io.MousePos;
         if (app.mode == AppState::Mode::Select && app.selectedBox >= 0) {
@@ -432,7 +601,6 @@ static void draw_view_content(AppState& app) {
             app.sim.pfield.build(app.sim.V);
         }
     }
-
     if (app.dragging && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
         ImVec2 uv0 = screen_to_uv(app.dragStart, tl, br);
         ImVec2 uv1 = screen_to_uv(app.dragEnd, tl, br);
@@ -509,7 +677,6 @@ static void draw_view_content(AppState& app) {
 
     draw_object_editors(app);
 }
-
 
 static void draw_object_editors(AppState& app) {
     const ImGuiWindowFlags flags = ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoCollapse;
@@ -614,6 +781,187 @@ static void draw_object_editors(AppState& app) {
     }
 }
 
+static void draw_style_editor(AppState& app) {
+    if (!app.showStyleEditor)
+        return;
+    ImGui::SetNextWindowSize(ImVec2(420.0f, 0.0f), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("Style Editor", &app.showStyleEditor)) {
+        ImGuiStyle& style = ImGui::GetStyle();
+        ImGui::SliderFloat("Window Rounding", &style.WindowRounding, 0.0f, 20.0f, "%.1f");
+        ImGui::SliderFloat("Frame Rounding", &style.FrameRounding, 0.0f, 20.0f, "%.1f");
+        ImGui::SliderFloat("Grab Rounding", &style.GrabRounding, 0.0f, 20.0f, "%.1f");
+        ImGui::SliderFloat("Window Border Size", &style.WindowBorderSize, 0.0f, 4.0f, "%.1f");
+        ImGui::SliderFloat("Frame Border Size", &style.FrameBorderSize, 0.0f, 4.0f, "%.1f");
+        ImGui::Checkbox("Anti-aliased lines", &style.AntiAliasedLines);
+        ImGui::Checkbox("Anti-aliased fill", &style.AntiAliasedFill);
+        ImGui::Separator();
+        ImGui::ColorEdit3("Window BG", &style.Colors[ImGuiCol_WindowBg].x);
+        ImGui::ColorEdit3("Header", &style.Colors[ImGuiCol_Header].x);
+        ImGui::ColorEdit3("Button", &style.Colors[ImGuiCol_Button].x);
+        ImGui::ColorEdit3("Accent", &style.Colors[ImGuiCol_PlotLines].x);
+    }
+    ImGui::End();
+}
+
+static void draw_toast_overlay(AppState& app) {
+    if (app.toastTimer <= 0.0f || app.toastMessage.empty())
+        return;
+    ImGuiIO& io = ImGui::GetIO();
+    app.toastTimer -= io.DeltaTime;
+    if (app.toastTimer <= 0.0f) {
+        app.toastTimer = 0.0f;
+        app.toastMessage.clear();
+        return;
+    }
+    ImGui::SetNextWindowBgAlpha(0.85f);
+    ImGui::SetNextWindowPos(ImVec2(16.0f, io.DisplaySize.y - 80.0f), ImGuiCond_Always, ImVec2(0.0f, 1.0f));
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize |
+                             ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing |
+                             ImGuiWindowFlags_NoNav;
+    if (ImGui::Begin("##toast_overlay", nullptr, flags)) {
+        ImGui::TextUnformatted(app.toastMessage.c_str());
+    }
+    ImGui::End();
+}
+
+static void draw_top_bar(AppState& app, GLFWwindow* window, float& out_height) {
+    constexpr float kTopPadding = 4.0f;
+    constexpr float kSidePadding = 10.0f;
+
+    ImGuiIO& io = ImGui::GetIO();
+    ImGui::SetNextWindowPos(ImVec2(0.0f, kTopPadding), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x, 0.0f));
+
+    out_height = 0.0f;
+    if (!ImGui::BeginMainMenuBar())
+        return;
+
+    ImGuiStyle& style = ImGui::GetStyle();
+    float frameHeight = ImGui::GetWindowSize().y;
+    out_height = frameHeight + kTopPadding;
+
+    // Left padding to keep menus from hugging the edge
+    ImGui::Dummy(ImVec2(kSidePadding, 0.0f));
+    ImGui::SameLine(0.0f, 0.0f);
+
+    if (ImGui::BeginMenu("File")) {
+        if (ImGui::MenuItem("Screenshot", "Ctrl+S")) {
+            take_screenshot(app);
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Exit")) {
+            glfwSetWindowShouldClose(window, 1);
+        }
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("Examples")) {
+        if (ImGui::MenuItem("Reload Default Scene")) {
+            load_default_scene(app);
+            push_toast(app, "Loaded default scene", 2.5f);
+        }
+        ImGui::EndMenu();
+    }
+    if (ImGui::BeginMenu("View")) {
+        if (ImGui::MenuItem("Dark Theme")) {
+            ImGui::StyleColorsDark();
+        }
+        if (ImGui::MenuItem("Light Theme")) {
+            ImGui::StyleColorsLight();
+        }
+        if (ImGui::MenuItem("Classic Theme")) {
+            ImGui::StyleColorsClassic();
+        }
+        // Custom preset directly callable like the built-in ones
+        if (ImGui::MenuItem("Dashboard Theme")) {
+            StyleColorsDashboard();
+        }
+        ImGui::Separator();
+        if (ImGui::MenuItem("Style Editor...", nullptr, app.showStyleEditor)) {
+            app.showStyleEditor = true;
+        }
+        ImGui::EndMenu();
+    }
+
+    bool maximized = glfwGetWindowAttrib(window, GLFW_MAXIMIZED);
+    const char* maximizeLabel = maximized ? "Restore" : "Maximize";
+
+    float spacing = style.ItemSpacing.x;
+    float minimizeWidth = ImGui::CalcTextSize("-").x + style.FramePadding.x * 2.0f;
+    float maximizeWidth = ImGui::CalcTextSize(maximizeLabel).x + style.FramePadding.x * 2.0f;
+    float closeWidth = ImGui::CalcTextSize("X").x + style.FramePadding.x * 2.0f;
+
+    float buttonHeight = ImGui::GetFrameHeight();
+    float buttonY = (frameHeight - buttonHeight) * 0.5f;
+
+    float totalButtons = minimizeWidth + maximizeWidth + closeWidth + spacing * 2.0f;
+    float cursorX = ImGui::GetCursorPosX();
+    float rawButtonStart = ImGui::GetWindowContentRegionMax().x - kSidePadding - totalButtons;
+    float buttonStart = std::max(cursorX, rawButtonStart);
+    float dragWidth = rawButtonStart - cursorX;
+
+    if (dragWidth > 0.0f) {
+        ImGui::SetCursorPosY(buttonY);
+        ImGui::InvisibleButton("##drag_zone", ImVec2(dragWidth, buttonHeight));
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && !maximized) {
+            app.windowDragActive = true;
+            app.windowDragMouseStart = ImGui::GetIO().MousePos;
+            glfwGetWindowPos(window, &app.windowDragStartX, &app.windowDragStartY);
+        }
+        ImGui::SameLine(0.0f, spacing);
+    } else {
+        ImGui::SameLine(buttonStart, spacing);
+    }
+
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 3.0f);
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(style.FramePadding.x, style.FramePadding.y + 1.0f));
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameBorderSize, 2.0f);
+
+    ImGui::SetCursorPosY(buttonY);
+    if (ImGui::Button("-", ImVec2(minimizeWidth, buttonHeight))) {
+        glfwIconifyWindow(window);
+        app.windowDragActive = false;
+    }
+    ImGui::SameLine(0.0f, spacing);
+    ImGui::SetCursorPosY(buttonY);
+    if (ImGui::Button(maximizeLabel, ImVec2(maximizeWidth, buttonHeight))) {
+        if (maximized) {
+            glfwRestoreWindow(window);
+        } else {
+            glfwMaximizeWindow(window);
+        }
+        app.windowDragActive = false;
+    }
+    ImGui::SameLine(0.0f, spacing);
+    //X button colors
+    ImGuiStyle& s = ImGui::GetStyle();
+    ImVec4 accent = s.Colors[ImGuiCol_PlotLines]; // primary/accent
+
+    ImGui::PushStyleColor(ImGuiCol_Button, accent);
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, Desaturate(accent, 0.4f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive, Darken(accent, 0.25f));
+    ImGui::SetCursorPosY(buttonY);
+    if (ImGui::Button("X", ImVec2(closeWidth, buttonHeight))) {
+        glfwSetWindowShouldClose(window, 1);
+        app.windowDragActive = false;
+    }
+    ImGui::PopStyleColor(3);
+    ImGui::PopStyleVar(3);
+
+    ImGui::EndMainMenuBar();
+
+    if (app.windowDragActive) {
+        ImGuiIO& io = ImGui::GetIO();
+        if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+            ImVec2 delta = io.MousePos - app.windowDragMouseStart;
+            int newX = app.windowDragStartX + static_cast<int>(delta.x);
+            int newY = app.windowDragStartY + static_cast<int>(delta.y);
+            glfwSetWindowPos(window, newX, newY);
+        } else {
+            app.windowDragActive = false;
+        }
+    }
+}
+
 } // namespace
 
 int run_gui(GLFWwindow* window) {
@@ -624,15 +972,15 @@ int run_gui(GLFWwindow* window) {
 
     // Aesthetics
     ImFontConfig cfg;
-    cfg.OversampleH = 3;
-    cfg.OversampleV = 3;
+    cfg.OversampleH = 6;
+    cfg.OversampleV = 6;
     cfg.PixelSnapH = false;
 
     io.Fonts->Clear();
 
-    std::string fontPath = "third_party/imgui/misc/fonts/Roboto-Medium.ttf";
+    std::string fontPath = "third_party/imgui/misc/fonts/Cousine-Regular.ttf";
     #ifdef PROJECT_SOURCE_DIR
-    fontPath = std::string(PROJECT_SOURCE_DIR) + "/third_party/imgui/misc/fonts/Roboto-Medium.ttf";
+    fontPath = std::string(PROJECT_SOURCE_DIR) + "/third_party/imgui/misc/fonts/Cousine-Regular.ttf";
     #endif
 
     ImFont* roboto = io.Fonts->AddFontFromFileTTF(fontPath.c_str(), 16.0f, &cfg);
@@ -644,19 +992,12 @@ int run_gui(GLFWwindow* window) {
     io.Fonts->Build();
     io.FontGlobalScale = 1.0f;
 
-    ImGui::StyleColorsDark();
+    StyleColorsDashboard();
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL2_Init();
 
     AppState app;
-    // Load a quick default example: central barrier and two right-moving packets
-    app.sim.pfield.boxes.push_back(sim::Box{0.48, 0.0, 0.52, 1.0, 2400.0});
-    app.sim.pfield.build(app.sim.V);
-    sim::Packet p1{0.25, 0.75, 0.05, 1.0, 10.0, -1.0};
-    app.sim.packets.push_back(p1);
-    sim::Packet p2{0.25, 0.25, 0.05, 1.0, 42.0, 4.0};
-    app.sim.packets.push_back(p2);
-    app.sim.reset();
+    load_default_scene(app);
 
     // Main loop
     while (!glfwWindowShouldClose(window)) {
@@ -665,10 +1006,20 @@ int run_gui(GLFWwindow* window) {
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
-        // Root window covering the entire viewport with fixed layout
+        float topBarHeight = 0.0f;
+        draw_top_bar(app, window, topBarHeight);
+
         ImGuiIO& frame_io = ImGui::GetIO();
-        ImGui::SetNextWindowPos(ImVec2(0,0), ImGuiCond_Always);
-        ImGui::SetNextWindowSize(frame_io.DisplaySize, ImGuiCond_Always);
+        if ((frame_io.KeyCtrl || frame_io.KeySuper) && ImGui::IsKeyPressed(ImGuiKey_S)) {
+            take_screenshot(app);
+        }
+
+        float contentY = topBarHeight;
+        if (contentY < 0.0f) contentY = 0.0f;
+        ImVec2 contentPos(0.0f, contentY);
+        ImVec2 contentSize(frame_io.DisplaySize.x, std::max(0.0f, frame_io.DisplaySize.y - contentY));
+        ImGui::SetNextWindowPos(contentPos, ImGuiCond_Always);
+        ImGui::SetNextWindowSize(contentSize, ImGuiCond_Always);
         ImGuiWindowFlags root_flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
                                       ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings |
                                       ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
@@ -682,6 +1033,9 @@ int run_gui(GLFWwindow* window) {
         draw_view_content(app);
         ImGui::EndChild();
         ImGui::End();
+
+        draw_style_editor(app);
+        draw_toast_overlay(app);
 
         if (app.sim.running) {
             app.sim.step();

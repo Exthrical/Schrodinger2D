@@ -87,7 +87,7 @@
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <ClCompile>
-      <AdditionalIncludeDirectories>C:\Users\deera\Codex\Schrodinger2D\src;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui\backends;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Users\deera\Codex\Schrodinger2D\src;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui\backends;C:\Users\deera\Codex\Schrodinger2D\third_party;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalOptions>%(AdditionalOptions) /external:I "C:/vcpkg/installed/x64-windows/include"</AdditionalOptions>
       <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
@@ -113,10 +113,10 @@
     </ClCompile>
     <ResourceCompile>
       <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_DEBUG;_WINDOWS;PROJECT_SOURCE_DIR=\"C:/Users/deera/Codex/Schrodinger2D\";BUILD_GUI=1;GLFW_DLL;CMAKE_INTDIR=\"Debug\"</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>C:\Users\deera\Codex\Schrodinger2D\src;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui\backends;C:\vcpkg\installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Users\deera\Codex\Schrodinger2D\src;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui\backends;C:\Users\deera\Codex\Schrodinger2D\third_party;C:\vcpkg\installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
     <Midl>
-      <AdditionalIncludeDirectories>C:\Users\deera\Codex\Schrodinger2D\src;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui\backends;C:\vcpkg\installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Users\deera\Codex\Schrodinger2D\src;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui\backends;C:\Users\deera\Codex\Schrodinger2D\third_party;C:\vcpkg\installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
       <HeaderFileName>%(Filename).h</HeaderFileName>
       <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
@@ -155,7 +155,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <ClCompile>
-      <AdditionalIncludeDirectories>C:\Users\deera\Codex\Schrodinger2D\src;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui\backends;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Users\deera\Codex\Schrodinger2D\src;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui\backends;C:\Users\deera\Codex\Schrodinger2D\third_party;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalOptions>%(AdditionalOptions) /external:I "C:/vcpkg/installed/x64-windows/include"</AdditionalOptions>
       <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
@@ -182,10 +182,10 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
     </ClCompile>
     <ResourceCompile>
       <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;PROJECT_SOURCE_DIR=\"C:/Users/deera/Codex/Schrodinger2D\";BUILD_GUI=1;GLFW_DLL;CMAKE_INTDIR=\"Release\"</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>C:\Users\deera\Codex\Schrodinger2D\src;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui\backends;C:\vcpkg\installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Users\deera\Codex\Schrodinger2D\src;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui\backends;C:\Users\deera\Codex\Schrodinger2D\third_party;C:\vcpkg\installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
     <Midl>
-      <AdditionalIncludeDirectories>C:\Users\deera\Codex\Schrodinger2D\src;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui\backends;C:\vcpkg\installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Users\deera\Codex\Schrodinger2D\src;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui\backends;C:\Users\deera\Codex\Schrodinger2D\third_party;C:\vcpkg\installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
       <HeaderFileName>%(Filename).h</HeaderFileName>
       <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
@@ -224,7 +224,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='MinSizeRel|x64'">
     <ClCompile>
-      <AdditionalIncludeDirectories>C:\Users\deera\Codex\Schrodinger2D\src;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui\backends;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Users\deera\Codex\Schrodinger2D\src;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui\backends;C:\Users\deera\Codex\Schrodinger2D\third_party;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalOptions>%(AdditionalOptions) /external:I "C:/vcpkg/installed/x64-windows/include"</AdditionalOptions>
       <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
@@ -251,10 +251,10 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
     </ClCompile>
     <ResourceCompile>
       <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;PROJECT_SOURCE_DIR=\"C:/Users/deera/Codex/Schrodinger2D\";BUILD_GUI=1;GLFW_DLL;CMAKE_INTDIR=\"MinSizeRel\"</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>C:\Users\deera\Codex\Schrodinger2D\src;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui\backends;C:\vcpkg\installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Users\deera\Codex\Schrodinger2D\src;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui\backends;C:\Users\deera\Codex\Schrodinger2D\third_party;C:\vcpkg\installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
     <Midl>
-      <AdditionalIncludeDirectories>C:\Users\deera\Codex\Schrodinger2D\src;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui\backends;C:\vcpkg\installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Users\deera\Codex\Schrodinger2D\src;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui\backends;C:\Users\deera\Codex\Schrodinger2D\third_party;C:\vcpkg\installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
       <HeaderFileName>%(Filename).h</HeaderFileName>
       <TypeLibraryName>%(Filename).tlb</TypeLibraryName>
@@ -293,7 +293,7 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='RelWithDebInfo|x64'">
     <ClCompile>
-      <AdditionalIncludeDirectories>C:\Users\deera\Codex\Schrodinger2D\src;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui\backends;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Users\deera\Codex\Schrodinger2D\src;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui\backends;C:\Users\deera\Codex\Schrodinger2D\third_party;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <AdditionalOptions>%(AdditionalOptions) /external:I "C:/vcpkg/installed/x64-windows/include"</AdditionalOptions>
       <AssemblerListingLocation>$(IntDir)</AssemblerListingLocation>
       <BasicRuntimeChecks>Default</BasicRuntimeChecks>
@@ -319,10 +319,10 @@ if %errorlevel% neq 0 goto :VCEnd</Command>
     </ClCompile>
     <ResourceCompile>
       <PreprocessorDefinitions>%(PreprocessorDefinitions);WIN32;_WINDOWS;NDEBUG;PROJECT_SOURCE_DIR=\"C:/Users/deera/Codex/Schrodinger2D\";BUILD_GUI=1;GLFW_DLL;CMAKE_INTDIR=\"RelWithDebInfo\"</PreprocessorDefinitions>
-      <AdditionalIncludeDirectories>C:\Users\deera\Codex\Schrodinger2D\src;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui\backends;C:\vcpkg\installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Users\deera\Codex\Schrodinger2D\src;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui\backends;C:\Users\deera\Codex\Schrodinger2D\third_party;C:\vcpkg\installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ResourceCompile>
     <Midl>
-      <AdditionalIncludeDirectories>C:\Users\deera\Codex\Schrodinger2D\src;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui\backends;C:\vcpkg\installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>C:\Users\deera\Codex\Schrodinger2D\src;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui;C:\Users\deera\Codex\Schrodinger2D\third_party\imgui\backends;C:\Users\deera\Codex\Schrodinger2D\third_party;C:\vcpkg\installed\x64-windows\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
       <OutputDirectory>$(ProjectDir)/$(IntDir)</OutputDirectory>
       <HeaderFileName>%(Filename).h</HeaderFileName>
       <TypeLibraryName>%(Filename).tlb</TypeLibraryName>

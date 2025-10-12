@@ -45,6 +45,7 @@ target_include_directories(Schrodinger2D PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party
 )
 
 target_compile_definitions(Schrodinger2D PRIVATE PROJECT_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
