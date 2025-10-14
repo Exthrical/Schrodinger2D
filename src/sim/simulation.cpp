@@ -59,6 +59,11 @@ void Simulation::addBox(const Box& b) {
     pfield.build(V);
 }
 
+void Simulation::addWell(const RadialWell& w) {
+    pfield.wells.push_back(w);
+    pfield.build(V);
+}
+
 void Simulation::step() {
     solver.step(psi, Nx, Ny, dx, dy, dt, V);
 }
@@ -86,4 +91,3 @@ void Simulation::mass_split(double& left, double& right) const {
 }
 
 } // namespace sim
-

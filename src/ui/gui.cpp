@@ -37,6 +37,7 @@ namespace {
 static constexpr float kPacketHandleRadiusPx = 9.0f;
 static constexpr float kMomentumHandleRadiusPx = 12.0f;
 static constexpr float kMomentumUVScale = 0.004f;
+static constexpr float kWellHandleRadiusPx = 10.0f;
 static constexpr float kDragThresholdPx = 4.0f;
 
 struct AppState {
@@ -54,13 +55,29 @@ struct AppState {
     // Box placement defaults
     double boxHeight{2400.0};
 
+    // Radial well placement defaults
+    double wellStrength{200.0};
+    double wellRadius{0.08};
+    sim::RadialWell::Profile wellProfile{sim::RadialWell::Profile::Gaussian};
+
     // Interaction state
-    enum class Mode { Drag, AddPacket, AddBox } mode{Mode::Drag};
-    enum class DragAction { None, MoveBox, MovePacket, AdjustPacketMomentum, AddBox, AddPacket };
+    enum class Mode { Drag, AddPacket, AddBox, AddWell } mode{Mode::Drag};
+    enum class DragAction {
+        None,
+        MoveBox,
+        MovePacket,
+        AdjustPacketMomentum,
+        MoveWell,
+        AddBox,
+        AddPacket,
+        AddWell
+    };
     DragAction dragAction{DragAction::None};
     int selectedBox{-1};
     int selectedPacket{-1};
+    int selectedWell{-1};
     int activeDragPacket{-1};
+    int activeDragWell{-1};
     bool pendingPacketClick{false};
     bool packetDragDirty{false};
     ImVec2 dragStart{0,0};
@@ -72,8 +89,10 @@ struct AppState {
 
     bool boxEditorOpen{false};
     bool packetEditorOpen{false};
+    bool wellEditorOpen{false};
     ImVec2 boxEditorPos{0,0};
     ImVec2 packetEditorPos{0,0};
+    ImVec2 wellEditorPos{0,0};
 
     bool showStyleEditor{false};
     float toastTimer{0.0f};
@@ -89,7 +108,10 @@ struct AppState {
     int texW{0}, texH{0};
 };
 
-static void load_default_scene(AppState& app);
+static void load_default_doubleslit_scene(AppState& app);
+static void load_counterpropagating_scene(AppState& app);
+static void load_waveguide_scene(AppState& app);
+static void load_trap_scene(AppState& app);
 static void push_toast(AppState& app, const std::string& message, float duration_seconds);
 static bool save_current_view_png(const AppState& app, const std::filesystem::path& path);
 static std::filesystem::path default_screenshot_path();
@@ -226,7 +248,7 @@ static void render_field_to_rgba(const sim::Simulation& sim, std::vector<unsigne
             }
         }
     }
-    const double Vscale = (maxVre > 1e-12 ? 0.2 * maxVre : 20.0);
+    const double Vscale = (maxVre > 1e-12 ? 0.8 * maxVre : 20.0);
     for (int j = 0; j < H; ++j) {
         for (int i = 0; i < W; ++i) {
             auto z = sim.psi[sim.idx(i, j)];
@@ -296,14 +318,17 @@ static void render_field_to_rgba(const sim::Simulation& sim, std::vector<unsigne
     }
 }
 
-static void load_default_scene(AppState& app) {
+static void load_default_twowall_scene(AppState& app) {
     app.sim.running = false;
     app.sim.pfield.boxes.clear();
+    app.sim.pfield.wells.clear();
     app.sim.packets.clear();
     app.selectedBox = -1;
     app.selectedPacket = -1;
+    app.selectedWell = -1;
     app.boxEditorOpen = false;
     app.packetEditorOpen = false;
+    app.wellEditorOpen = false;
 
     app.sim.pfield.boxes.push_back(sim::Box{0.48, 0.0, 0.52, 1.0, 2400.0});
     app.sim.pfield.build(app.sim.V);
@@ -312,6 +337,159 @@ static void load_default_scene(AppState& app) {
     app.sim.packets.push_back(p1);
     sim::Packet p2{0.25, 0.25, 0.05, 1.0, 42.0, 4.0};
     app.sim.packets.push_back(p2);
+    app.sim.reset();
+}
+
+static void load_default_doubleslit_scene(AppState& app) {
+    app.sim.running = false;
+    app.sim.pfield.boxes.clear();
+    app.sim.pfield.wells.clear();
+    app.sim.packets.clear();
+    app.selectedBox = -1;
+    app.selectedPacket = -1;
+    app.selectedWell = -1;
+    app.boxEditorOpen = false;
+    app.packetEditorOpen = false;
+    app.wellEditorOpen = false;
+
+    app.sim.pfield.boxes.push_back(sim::Box{0.48, 0.0, 0.52, 0.4, 2400.0});
+    app.sim.pfield.boxes.push_back(sim::Box{0.48, 0.6, 0.52, 1.0, 2400.0});
+    app.sim.pfield.boxes.push_back(sim::Box{0.48, 0.45, 0.52, 0.55, 2400.0});
+    app.sim.pfield.build(app.sim.V);
+
+    sim::Packet p1{0.25, 0.5, 0.05, 1.0, 24.0, 0.0};
+    app.sim.packets.push_back(p1);
+    app.sim.reset();
+}
+
+static void load_counterpropagating_scene(AppState& app) {
+    app.sim.running = false;
+    app.sim.pfield.boxes.clear();
+    app.sim.pfield.wells.clear();
+    app.sim.packets.clear();
+    app.selectedBox = -1;
+    app.selectedPacket = -1;
+    app.selectedWell = -1;
+    app.boxEditorOpen = false;
+    app.packetEditorOpen = false;
+    app.wellEditorOpen = false;
+
+    app.sim.pfield.build(app.sim.V);
+
+    sim::Packet left{0.28, 0.5, 0.045, 0.8, 22.0, 0.0};
+    sim::Packet right{0.72, 0.5, 0.045, 0.8, -22.0, 0.0};
+    sim::Packet offset{0.5, 0.68, 0.035, 0.6, -6.0, -10.0};
+    app.sim.packets.push_back(left);
+    app.sim.packets.push_back(right);
+    app.sim.packets.push_back(offset);
+    app.sim.reset();
+}
+
+static void load_waveguide_scene(AppState& app) {
+    app.sim.running = false;
+    app.sim.pfield.boxes.clear();
+    app.sim.pfield.wells.clear();
+    app.sim.packets.clear();
+    app.selectedBox = -1;
+    app.selectedPacket = -1;
+    app.selectedWell = -1;
+    app.boxEditorOpen = false;
+    app.packetEditorOpen = false;
+    app.wellEditorOpen = false;
+
+    // Build a narrow S-shaped waveguide using axis-aligned barriers.
+    app.sim.pfield.boxes.push_back(sim::Box{0.0, 0.0, 1.0, 0.08, 2200.0});
+    app.sim.pfield.boxes.push_back(sim::Box{0.0, 0.92, 1.0, 1.0, 2200.0});
+    app.sim.pfield.boxes.push_back(sim::Box{0.36, 0.0, 0.44, 0.38, 2200.0});
+    app.sim.pfield.boxes.push_back(sim::Box{0.56, 0.62, 0.64, 1.0, 2200.0});
+    app.sim.pfield.build(app.sim.V);
+
+    sim::Packet guide{0.12, 0.5, 0.05, 1.0, 28.0, 0.0};
+    app.sim.packets.push_back(guide);
+    app.sim.reset();
+}
+
+static void load_trap_scene(AppState& app) {
+    app.sim.running = false;
+    app.sim.pfield.boxes.clear();
+    app.sim.pfield.wells.clear();
+    app.sim.packets.clear();
+    app.selectedBox = -1;
+    app.selectedPacket = -1;
+    app.selectedWell = -1;
+    app.boxEditorOpen = false;
+    app.packetEditorOpen = false;
+    app.wellEditorOpen = false;
+
+    // Create a square trap with a central obstacle to seed orbiting dynamics.
+    app.sim.pfield.boxes.push_back(sim::Box{0.1, 0.1, 0.9, 0.12, 3400.0});
+    app.sim.pfield.boxes.push_back(sim::Box{0.1, 0.88, 0.9, 0.9, 3400.0});
+    app.sim.pfield.boxes.push_back(sim::Box{0.1, 0.1, 0.12, 0.9, 3400.0});
+    app.sim.pfield.boxes.push_back(sim::Box{0.88, 0.1, 0.9, 0.9, 3400.0});
+    app.sim.pfield.boxes.push_back(sim::Box{0.43, 0.43, 0.57, 0.57, 2800.0});
+    app.sim.pfield.wells.push_back(sim::RadialWell{0.5, 0.5, -320.0, 0.08, sim::RadialWell::Profile::SoftCoulomb});
+    app.sim.pfield.build(app.sim.V);
+
+    sim::Packet ring1{0.3, 0.5, 0.04, 0.7, 12.0, 6.0};
+    sim::Packet ring2{0.7, 0.5, 0.04, 0.7, -12.0, -6.0};
+    sim::Packet ring3{0.5, 0.3, 0.035, 0.6, 0.0, 14.0};
+    app.sim.packets.push_back(ring1);
+    app.sim.packets.push_back(ring2);
+    app.sim.packets.push_back(ring3);
+    app.sim.reset();
+}
+
+static void load_central_well_scene(AppState& app) {
+    app.sim.running = false;
+    app.sim.pfield.boxes.clear();
+    app.sim.pfield.wells.clear();
+    app.sim.packets.clear();
+    app.sim.dt = 0.000025;
+    app.selectedBox = -1;
+    app.selectedPacket = -1;
+    app.selectedWell = -1;
+    app.boxEditorOpen = false;
+    app.packetEditorOpen = false;
+    app.wellEditorOpen = false;
+
+    sim::RadialWell well;
+    well.cx = 0.5; well.cy = 0.5;
+    well.strength = -260.0;
+    well.radius = 0.075;
+    well.profile = sim::RadialWell::Profile::Gaussian;
+    app.sim.pfield.wells.push_back(well);
+    app.sim.pfield.build(app.sim.V);
+
+    sim::Packet orbit1{0.35, 0.5, 0.035, 0.85, 0.0, 14.0};
+    sim::Packet orbit2{0.65, 0.5, 0.035, 0.85, 0.0, -14.0};
+    app.sim.packets.push_back(orbit1);
+    app.sim.packets.push_back(orbit2);
+    app.sim.reset();
+}
+
+static void load_central_well_2_scene(AppState& app) {
+    app.sim.running = false;
+    app.sim.pfield.boxes.clear();
+    app.sim.pfield.wells.clear();
+    app.sim.packets.clear();
+    app.sim.dt = 0.000025;
+    app.selectedBox = -1;
+    app.selectedPacket = -1;
+    app.selectedWell = -1;
+    app.boxEditorOpen = false;
+    app.packetEditorOpen = false;
+    app.wellEditorOpen = false;
+
+    sim::RadialWell well;
+    well.cx = 0.5; well.cy = 0.5;
+    well.strength = -500.0;
+    well.radius = 0.075;
+    well.profile = sim::RadialWell::Profile::InverseSquare;
+    app.sim.pfield.wells.push_back(well);
+    app.sim.pfield.build(app.sim.V);
+
+    sim::Packet orbit1{0.175, 0.5, 0.035, 0.85, 65.0, 25.0};
+    app.sim.packets.push_back(orbit1);
     app.sim.reset();
 }
 
@@ -388,6 +566,7 @@ static const char* tool_mode_name(AppState::Mode mode) {
         case AppState::Mode::Drag: return "Drag";
         case AppState::Mode::AddPacket: return "Add Packet";
         case AppState::Mode::AddBox: return "Add Box";
+        case AppState::Mode::AddWell: return "Add Well";
         default: return "Unknown";
     }
 }
@@ -427,8 +606,10 @@ static void draw_settings(AppState& app) {
             app.sim.resize(nx, ny);
             app.selectedBox = -1;
             app.selectedPacket = -1;
+            app.selectedWell = -1;
             app.boxEditorOpen = false;
             app.packetEditorOpen = false;
+            app.wellEditorOpen = false;
         }
     }
     double mass = app.sim.mass();
@@ -465,6 +646,19 @@ static void draw_settings(AppState& app) {
         ImGui::TextUnformatted("New box");
         vmin = -4000.0; vmax = 4000.0;
         ImGui::SliderScalar("Height", ImGuiDataType_Double, &app.boxHeight, &vmin, &vmax, "%.1f");
+
+        ImGui::Separator();
+        ImGui::TextUnformatted("New radial well");
+        vmin = -4000.0; vmax = 4000.0;
+        ImGui::SliderScalar("Strength", ImGuiDataType_Double, &app.wellStrength, &vmin, &vmax, "%.1f");
+        vmin = 0.01; vmax = 0.5;
+        ImGui::SliderScalar("Radius", ImGuiDataType_Double, &app.wellRadius, &vmin, &vmax, "%.3f");
+        const char* profiles[] = {"Gaussian", "Soft Coulomb", "Inverse Square"};
+        int profileIdx = static_cast<int>(app.wellProfile);
+        if (ImGui::Combo("Profile", &profileIdx, profiles, IM_ARRAYSIZE(profiles))) {
+            profileIdx = std::clamp(profileIdx, 0, 2);
+            app.wellProfile = static_cast<sim::RadialWell::Profile>(profileIdx);
+        }
     }
 
     if (ImGui::CollapsingHeader("Potential Field", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -476,6 +670,7 @@ static void draw_settings(AppState& app) {
             app.sim.pfield.build(app.sim.V);
         }
         ImGui::Text("%d box(es)", static_cast<int>(app.sim.pfield.boxes.size()));
+        ImGui::Text("%d well(s)", static_cast<int>(app.sim.pfield.wells.size()));
         if (ImGui::Button("Clear boxes")) {
             app.sim.pfield.boxes.clear();
             app.sim.reset();
@@ -485,6 +680,12 @@ static void draw_settings(AppState& app) {
         ImGui::SameLine();
         if (ImGui::Button("Rebuild V & Reset")) {
             app.sim.reset();
+        }
+        if (ImGui::Button("Clear wells")) {
+            app.sim.pfield.wells.clear();
+            app.sim.reset();
+            app.selectedWell = -1;
+            app.wellEditorOpen = false;
         }
     }
 
@@ -543,9 +744,10 @@ static void draw_tools_panel(AppState& app) {
     };
 
     static const ToolEntry tools[] = {
-        {AppState::Mode::Drag,      "DRAG",   "Move / Edit",    "Drag boxes, packets, and adjust momentum"},
+        {AppState::Mode::Drag,      "DRAG",   "Move / Edit",    "Drag boxes, packets, wells, and adjust momentum"},
         {AppState::Mode::AddPacket, "PACKET", "Insert",         "Click-drag in the field to place a packet"},
         {AppState::Mode::AddBox,    "BOX",    "Barrier",        "Click-drag to create a potential box"},
+        {AppState::Mode::AddWell,   "WELL",   "Radial",         "Click to place a radial potential well"},
     };
 
     const int columns = 2;
@@ -630,6 +832,30 @@ static void draw_view_content(AppState& app) {
         dl->AddRect(top_left, bottom_right, col, 0.0f, 0, thickness);
     }
 
+    struct WellVisual {
+        int idx;
+        ImVec2 centerUV;
+        ImVec2 centerScreen;
+        float radiusPx;
+        const sim::RadialWell* well;
+    };
+    std::vector<WellVisual> wellVis;
+    wellVis.reserve(app.sim.pfield.wells.size());
+    for (int wi = 0; wi < (int)app.sim.pfield.wells.size(); ++wi) {
+        const auto& well = app.sim.pfield.wells[wi];
+        WellVisual wv;
+        wv.idx = wi;
+        wv.well = &well;
+        wv.centerUV = ImVec2((float)well.cx, (float)well.cy);
+        wv.centerScreen = uv_to_screen(wv.centerUV, tl, br);
+        ImVec2 sampleUV = ImVec2((float)(well.cx + well.radius), (float)well.cy);
+        ImVec2 sampleScreen = uv_to_screen(sampleUV, tl, br);
+        float dx = sampleScreen.x - wv.centerScreen.x;
+        float dy = sampleScreen.y - wv.centerScreen.y;
+        wv.radiusPx = std::sqrt(dx * dx + dy * dy);
+        wellVis.push_back(wv);
+    }
+
     struct PacketVisual {
         int idx;
         ImVec2 centerUV;
@@ -655,6 +881,7 @@ static void draw_view_content(AppState& app) {
     bool hovered = ImGui::IsItemHovered();
     int hoveredMomentumIdx = -1;
     int hoveredPacketIdx = -1;
+    int hoveredWellIdx = -1;
     if (hovered) {
         float bestMomentum = kMomentumHandleRadiusPx * kMomentumHandleRadiusPx;
         float bestCenter = kPacketHandleRadiusPx * kPacketHandleRadiusPx;
@@ -674,6 +901,38 @@ static void draw_view_content(AppState& app) {
                 hoveredPacketIdx = pv.idx;
             }
         }
+        float bestWell = kWellHandleRadiusPx * kWellHandleRadiusPx;
+        for (const auto& wv : wellVis) {
+            float dx = wv.centerScreen.x - io.MousePos.x;
+            float dy = wv.centerScreen.y - io.MousePos.y;
+            float dist2 = dx * dx + dy * dy;
+            if (dist2 <= bestWell) {
+                bestWell = dist2;
+                hoveredWellIdx = wv.idx;
+            }
+        }
+    }
+
+    for (const auto& wv : wellVis) {
+        bool selected = (app.selectedWell == wv.idx);
+        bool centerHover = (hoveredWellIdx == wv.idx && app.mode == AppState::Mode::Drag);
+        const auto& well = *wv.well;
+        bool attractive = well.strength < 0.0;
+        ImU32 ringColor = attractive ? make_rgba(0.2f, 0.7f, 1.0f, selected ? 0.95f : 0.75f)
+                                     : make_rgba(0.95f, 0.4f, 0.25f, selected ? 0.95f : 0.75f);
+        ImU32 fillColor = attractive ? make_rgba(0.2f, 0.6f, 1.0f, selected ? 0.18f : 0.12f)
+                                     : make_rgba(0.95f, 0.35f, 0.25f, selected ? 0.18f : 0.12f);
+        float ringThickness = selected ? 3.0f : 2.0f;
+        float circleRadius = std::max(4.0f, wv.radiusPx);
+        dl->AddCircleFilled(wv.centerScreen, circleRadius, fillColor);
+        dl->AddCircle(wv.centerScreen, circleRadius, ringColor, 0, ringThickness);
+
+        float handleRadius = selected ? kWellHandleRadiusPx + 2.0f : kWellHandleRadiusPx;
+        if (centerHover) handleRadius += 2.0f;
+        ImU32 handleColor = attractive ? make_rgba(0.3f, 0.8f, 1.0f, 1.0f)
+                                       : make_rgba(1.0f, 0.5f, 0.3f, 1.0f);
+        dl->AddCircleFilled(wv.centerScreen, handleRadius * 0.45f, handleColor);
+        dl->AddCircle(wv.centerScreen, handleRadius, handleColor, 0, 2.0f);
     }
 
     for (const auto& pv : packetVis) {
@@ -717,6 +976,7 @@ static void draw_view_content(AppState& app) {
         app.dragEnd = io.MousePos;
         app.dragAction = AppState::DragAction::None;
         app.activeDragPacket = -1;
+        app.activeDragWell = -1;
         app.pendingPacketClick = false;
         app.packetDragDirty = false;
 
@@ -725,6 +985,8 @@ static void draw_view_content(AppState& app) {
                 app.selectedPacket = hoveredMomentumIdx;
                 app.selectedBox = -1;
                 app.boxEditorOpen = false;
+                app.selectedWell = -1;
+                app.wellEditorOpen = false;
                 app.packetEditorOpen = false;
                 app.activeDragPacket = hoveredMomentumIdx;
                 app.dragAction = AppState::DragAction::AdjustPacketMomentum;
@@ -735,6 +997,8 @@ static void draw_view_content(AppState& app) {
                 app.selectedPacket = hoveredPacketIdx;
                 app.selectedBox = -1;
                 app.boxEditorOpen = false;
+                app.selectedWell = -1;
+                app.wellEditorOpen = false;
                 app.activeDragPacket = hoveredPacketIdx;
                 app.dragAction = AppState::DragAction::MovePacket;
                 const auto& pkt = app.sim.packets[hoveredPacketIdx];
@@ -742,6 +1006,16 @@ static void draw_view_content(AppState& app) {
                 app.packetDragStartCy = pkt.cy;
                 app.packetEditorOpen = false;
                 app.pendingPacketClick = true;
+            } else if (hoveredWellIdx >= 0) {
+                app.selectedWell = hoveredWellIdx;
+                app.wellEditorOpen = true;
+                app.wellEditorPos = io.MousePos + ImVec2(16, 16);
+                app.selectedBox = -1;
+                app.boxEditorOpen = false;
+                app.selectedPacket = -1;
+                app.packetEditorOpen = false;
+                app.activeDragWell = hoveredWellIdx;
+                app.dragAction = AppState::DragAction::MoveWell;
             } else {
                 int boxHit = -1;
                 for (int bi = static_cast<int>(app.sim.pfield.boxes.size()) - 1; bi >= 0; --bi) {
@@ -761,18 +1035,24 @@ static void draw_view_content(AppState& app) {
                     app.boxEditorPos = io.MousePos + ImVec2(16, 16);
                     app.selectedPacket = -1;
                     app.packetEditorOpen = false;
+                    app.selectedWell = -1;
+                    app.wellEditorOpen = false;
                     app.dragAction = AppState::DragAction::MoveBox;
                 } else {
                     app.selectedBox = -1;
                     app.boxEditorOpen = false;
                     app.selectedPacket = -1;
                     app.packetEditorOpen = false;
+                    app.selectedWell = -1;
+                    app.wellEditorOpen = false;
                 }
             }
         } else if (app.mode == AppState::Mode::AddBox) {
             app.dragAction = AppState::DragAction::AddBox;
         } else if (app.mode == AppState::Mode::AddPacket) {
             app.dragAction = AppState::DragAction::AddPacket;
+        } else if (app.mode == AppState::Mode::AddWell) {
+            app.dragAction = AppState::DragAction::AddWell;
         }
     }
 
@@ -821,6 +1101,16 @@ static void draw_view_content(AppState& app) {
                 pkt.kx = deltaUV.x / kMomentumUVScale;
                 pkt.ky = deltaUV.y / kMomentumUVScale;
                 app.packetDragDirty = true;
+            }
+            break;
+        }
+        case AppState::DragAction::MoveWell: {
+            if (app.activeDragWell >= 0 && app.activeDragWell < static_cast<int>(app.sim.pfield.wells.size())) {
+                auto& well = app.sim.pfield.wells[app.activeDragWell];
+                ImVec2 uv = screen_to_uv(io.MousePos, tl, br);
+                well.cx = std::clamp((double)uv.x, 0.0, 1.0);
+                well.cy = std::clamp((double)uv.y, 0.0, 1.0);
+                app.sim.pfield.build(app.sim.V);
             }
             break;
         }
@@ -890,12 +1180,34 @@ static void draw_view_content(AppState& app) {
                 app.sim.reset();
             }
             break;
+        case AppState::DragAction::AddWell: {
+            ImVec2 uv_center = screen_to_uv(app.dragEnd, tl, br);
+            sim::RadialWell w;
+            w.cx = std::clamp((double)uv_center.x, 0.0, 1.0);
+            w.cy = std::clamp((double)uv_center.y, 0.0, 1.0);
+            w.strength = app.wellStrength;
+            w.radius = std::clamp(app.wellRadius, 0.01, 0.5);
+            w.profile = app.wellProfile;
+            app.sim.addWell(w);
+            app.selectedWell = static_cast<int>(app.sim.pfield.wells.size()) - 1;
+            app.wellEditorOpen = true;
+            app.wellEditorPos = io.MousePos + ImVec2(16, 16);
+            app.selectedBox = -1;
+            app.boxEditorOpen = false;
+            app.selectedPacket = -1;
+            app.packetEditorOpen = false;
+            break;
+        }
+        case AppState::DragAction::MoveWell:
+            // keep selection; editor already open
+            break;
         default:
             break;
         }
 
         app.dragAction = AppState::DragAction::None;
         app.activeDragPacket = -1;
+        app.activeDragWell = -1;
         app.pendingPacketClick = false;
         app.packetDragDirty = false;
     }
@@ -921,11 +1233,20 @@ static void draw_view_content(AppState& app) {
     if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) {
         if (ImGui::IsKeyPressed(ImGuiKey_Space)) app.sim.running = !app.sim.running;
         if (ImGui::IsKeyPressed(ImGuiKey_R)) app.sim.reset();
-        if (ImGui::IsKeyPressed(ImGuiKey_Delete) && app.selectedBox >= 0) {
-            app.sim.pfield.boxes.erase(app.sim.pfield.boxes.begin() + app.selectedBox);
-            app.selectedBox = -1;
-            app.boxEditorOpen = false;
-            app.sim.pfield.build(app.sim.V);
+        if (ImGui::IsKeyPressed(ImGuiKey_Delete)) {
+            if (app.selectedBox >= 0) {
+                app.sim.pfield.boxes.erase(app.sim.pfield.boxes.begin() + app.selectedBox);
+                app.selectedBox = -1;
+                app.boxEditorOpen = false;
+                app.sim.reset();
+            } else if (app.selectedWell >= 0) {
+                if (app.selectedWell < static_cast<int>(app.sim.pfield.wells.size())) {
+                    app.sim.pfield.wells.erase(app.sim.pfield.wells.begin() + app.selectedWell);
+                    app.selectedWell = -1;
+                    app.wellEditorOpen = false;
+                    app.sim.reset();
+                }
+            }
         }
     }
 
@@ -1033,6 +1354,68 @@ static void draw_object_editors(AppState& app) {
             }
         }
     }
+
+    if (app.wellEditorOpen) {
+        if (app.selectedWell < 0 || app.selectedWell >= static_cast<int>(app.sim.pfield.wells.size())) {
+            app.wellEditorOpen = false;
+            app.selectedWell = -1;
+        } else {
+            ImGui::SetNextWindowPos(app.wellEditorPos, ImGuiCond_Appearing);
+            bool open = app.wellEditorOpen;
+            if (ImGui::Begin("Well Properties", &open, flags)) {
+                auto& w = app.sim.pfield.wells[app.selectedWell];
+                app.wellEditorPos = ImGui::GetWindowPos();
+                ImGui::Text("Well #%d", app.selectedWell);
+                ImGui::Separator();
+                bool rebuild = false;
+                const double cxMin = 0.0, cxMax = 1.0;
+                if (ImGui::SliderScalar("Center X", ImGuiDataType_Double, &w.cx, &cxMin, &cxMax, "%.3f")) {
+                    w.cx = std::clamp(w.cx, 0.0, 1.0);
+                    rebuild = true;
+                }
+                const double cyMin = 0.0, cyMax = 1.0;
+                if (ImGui::SliderScalar("Center Y", ImGuiDataType_Double, &w.cy, &cyMin, &cyMax, "%.3f")) {
+                    w.cy = std::clamp(w.cy, 0.0, 1.0);
+                    rebuild = true;
+                }
+                const double sMin = -4000.0, sMax = 4000.0;
+                if (ImGui::SliderScalar("Strength", ImGuiDataType_Double, &w.strength, &sMin, &sMax, "%.1f")) {
+                    rebuild = true;
+                }
+                const double rMin = 0.01, rMax = 0.5;
+                if (ImGui::SliderScalar("Radius", ImGuiDataType_Double, &w.radius, &rMin, &rMax, "%.3f")) {
+                    w.radius = std::clamp(w.radius, rMin, rMax);
+                    rebuild = true;
+                }
+                const char* profileNames[] = {"Gaussian", "Soft Coulomb", "Inverse Square"};
+                int profileIdx = static_cast<int>(w.profile);
+                if (ImGui::Combo("Profile", &profileIdx, profileNames, IM_ARRAYSIZE(profileNames))) {
+                    profileIdx = std::clamp(profileIdx, 0, 2);
+                    w.profile = static_cast<sim::RadialWell::Profile>(profileIdx);
+                    rebuild = true;
+                }
+                if (rebuild) {
+                    app.sim.pfield.build(app.sim.V);
+                }
+                if (ImGui::Button("Delete well")) {
+                    app.sim.pfield.wells.erase(app.sim.pfield.wells.begin() + app.selectedWell);
+                    app.selectedWell = -1;
+                    app.wellEditorOpen = false;
+                    app.sim.reset();
+                    open = false;
+                }
+                ImGui::SameLine();
+                if (ImGui::Button("Close##wellEditor")) {
+                    open = false;
+                }
+            }
+            ImGui::End();
+            app.wellEditorOpen = open && app.selectedWell >= 0 && app.selectedWell < static_cast<int>(app.sim.pfield.wells.size());
+            if (!app.wellEditorOpen) {
+                app.selectedWell = -1;
+            }
+        }
+    }
 }
 
 static void draw_style_editor(AppState& app) {
@@ -1078,7 +1461,7 @@ static void draw_toast_overlay(AppState& app) {
     ImGui::End();
 }
 
-static void draw_top_bar(AppState& app, GLFWwindow* window, float& out_height) {
+static void draw_top_bar(AppState& app, GLFWwindow* window, float& out_height, ImVec2& out_min, ImVec2& out_max) {
     constexpr float kTopPadding = 4.0f;
     constexpr float kSidePadding = 10.0f;
 
@@ -1087,12 +1470,17 @@ static void draw_top_bar(AppState& app, GLFWwindow* window, float& out_height) {
     ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x, 0.0f));
 
     out_height = 0.0f;
+    out_min = ImVec2(0.0f, 0.0f);
+    out_max = ImVec2(0.0f, 0.0f);
+
     if (!ImGui::BeginMainMenuBar())
         return;
 
     ImGuiStyle& style = ImGui::GetStyle();
     float frameHeight = ImGui::GetWindowSize().y;
     out_height = frameHeight + kTopPadding;
+    ImVec2 barPos = ImGui::GetWindowPos();
+    ImVec2 barSize = ImGui::GetWindowSize();
 
     // Left padding to keep menus from hugging the edge
     ImGui::Dummy(ImVec2(kSidePadding, 0.0f));
@@ -1109,9 +1497,33 @@ static void draw_top_bar(AppState& app, GLFWwindow* window, float& out_height) {
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Examples")) {
-        if (ImGui::MenuItem("Reload Default Scene")) {
-            load_default_scene(app);
-            push_toast(app, "Loaded default scene", 2.5f);
+        if (ImGui::MenuItem("Double Slit")) {
+            load_default_doubleslit_scene(app);
+            push_toast(app, "Loaded double slit scene", 2.5f);
+        }
+        if (ImGui::MenuItem("Two Packets")) {
+            load_default_twowall_scene(app);
+            push_toast(app, "Loaded two packet scene", 2.5f);
+        }
+        if (ImGui::MenuItem("Counter-propagating")) {
+            load_counterpropagating_scene(app);
+            push_toast(app, "Loaded counter-propagating packets", 2.5f);
+        }
+        if (ImGui::MenuItem("Waveguide Bend")) {
+            load_waveguide_scene(app);
+            push_toast(app, "Loaded waveguide scene", 2.5f);
+        }
+        if (ImGui::MenuItem("Trapped Swirl")) {
+            load_trap_scene(app);
+            push_toast(app, "Loaded trapped swirl", 2.5f);
+        }
+        if (ImGui::MenuItem("Central Well 1")) {
+            load_central_well_scene(app);
+            push_toast(app, "Loaded central radial well", 2.5f);
+        }
+        if (ImGui::MenuItem("Central Well 2")) {
+            load_central_well_2_scene(app);
+            push_toast(app, "Loaded central radial well (2)", 2.5f);
         }
         ImGui::EndMenu();
     }
@@ -1203,6 +1615,9 @@ static void draw_top_bar(AppState& app, GLFWwindow* window, float& out_height) {
 
     ImGui::EndMainMenuBar();
 
+    out_min = barPos;
+    out_max = barPos + barSize;
+
     if (app.windowDragActive) {
         if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
             ImVec2 delta = io.MousePos - app.windowDragMouseStart;
@@ -1250,7 +1665,7 @@ int run_gui(GLFWwindow* window) {
     ImGui_ImplOpenGL2_Init();
 
     AppState app;
-    load_default_scene(app);
+    load_default_doubleslit_scene(app);
 
     // Main loop
     while (!glfwWindowShouldClose(window)) {
@@ -1260,43 +1675,106 @@ int run_gui(GLFWwindow* window) {
         ImGui::NewFrame();
 
         float topBarHeight = 0.0f;
-        draw_top_bar(app, window, topBarHeight);
+        ImVec2 topBarMin, topBarMax;
+        draw_top_bar(app, window, topBarHeight, topBarMin, topBarMax);
 
         ImGuiIO& frame_io = ImGui::GetIO();
         if ((frame_io.KeyCtrl || frame_io.KeySuper) && ImGui::IsKeyPressed(ImGuiKey_S)) {
             take_screenshot(app);
         }
 
-        float contentY = topBarHeight;
-        if (contentY < 0.0f) contentY = 0.0f;
-        ImVec2 contentPos(0.0f, contentY);
-        ImVec2 contentSize(frame_io.DisplaySize.x, std::max(0.0f, frame_io.DisplaySize.y - contentY));
-        ImGui::SetNextWindowPos(contentPos, ImGuiCond_Always);
-        ImGui::SetNextWindowSize(contentSize, ImGuiCond_Always);
-        ImGuiWindowFlags root_flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove |
-                                      ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings |
-                                      ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoNavFocus;
-        ImGui::Begin("Schrodinger2D", nullptr, root_flags);
+        float contentY = std::max(0.0f, topBarHeight);
         const float left_w = 360.0f; // fixed settings panel width
         const float tools_w = 264.0f;
+        float usableHeight = std::max(0.0f, frame_io.DisplaySize.y - contentY);
+        float view_w = std::max(0.0f, frame_io.DisplaySize.x - left_w - tools_w);
 
-        ImGui::BeginChild("SettingsPanel", ImVec2(left_w, 0), true);
+        ImGuiWindowFlags paneFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove |
+                                     ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings |
+                                     ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoBringToFrontOnFocus |
+                                     ImGuiWindowFlags_NoNavFocus;
+
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+
+        ImGui::SetNextWindowPos(ImVec2(0.0f, contentY), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(left_w, usableHeight), ImGuiCond_Always);
+        ImGui::Begin("##SettingsPane", nullptr, paneFlags);
         draw_settings(app);
-        ImGui::EndChild();
-        ImGui::SameLine();
-        ImGui::BeginGroup();
-        ImVec2 rightAvail = ImGui::GetContentRegionAvail();
-        float spacing = ImGui::GetStyle().ItemSpacing.x;
-        float viewWidth = std::max(0.0f, rightAvail.x - tools_w - spacing);
-        ImGui::BeginChild("ViewPanel", ImVec2(viewWidth, 0), true);
-        draw_view_content(app);
-        ImGui::EndChild();
-        ImGui::SameLine();
-        ImGui::BeginChild("ToolsPanel", ImVec2(tools_w, 0), true);
-        draw_tools_panel(app);
-        ImGui::EndChild();
-        ImGui::EndGroup();
+        ImVec2 settingsMin = ImGui::GetWindowPos();
+        ImVec2 settingsMax = settingsMin + ImGui::GetWindowSize();
         ImGui::End();
+
+        ImGui::SetNextWindowPos(ImVec2(frame_io.DisplaySize.x - tools_w, contentY), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(tools_w, usableHeight), ImGuiCond_Always);
+        ImGui::Begin("##ToolsPane", nullptr, paneFlags);
+        draw_tools_panel(app);
+        ImVec2 toolsMin = ImGui::GetWindowPos();
+        ImVec2 toolsMax = toolsMin + ImGui::GetWindowSize();
+        ImGui::End();
+
+        ImGui::SetNextWindowPos(ImVec2(left_w, contentY), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(view_w, usableHeight), ImGuiCond_Always);
+        ImGui::Begin("##ViewPane", nullptr, paneFlags);
+        draw_view_content(app);
+        ImGui::End();
+
+        ImGui::PopStyleVar(2);
+
+        ImVec2 topMin = topBarMin;
+        ImVec2 topMax = topBarMax;
+        ImVec2 totalMin(0.0f, topMin.y);
+        ImVec2 totalMax(frame_io.DisplaySize.x - 1.0f, frame_io.DisplaySize.y - 1.0f);
+        const float baseThickness = 1.0f;
+        const float vertexThickness = 2.6f;
+        const float vertexLen = 6.0f;
+        const float junctionHalf = vertexLen * 0.5f;
+        ImU32 borderCol = ImGui::GetColorU32(ImGui::GetStyle().Colors[ImGuiCol_Border]);
+        auto snap = [](ImVec2 p) { return ImVec2(std::floor(p.x) + 0.5f, std::floor(p.y) + 0.5f); };
+        ImDrawList* fg = ImGui::GetForegroundDrawList();
+        auto thick_segment = [&](ImVec2 a, ImVec2 b) {
+            fg->AddLine(snap(a), snap(b), borderCol, vertexThickness);
+        };
+
+        fg->AddRect(snap(totalMin), snap(totalMax), borderCol, 0.0f, 0, baseThickness);
+
+        float separatorTop = topMax.y;
+        float bottomY = totalMax.y;
+        float leftSplitX = settingsMax.x;
+        float rightSplitX = toolsMin.x;
+
+        fg->AddLine(snap(ImVec2(leftSplitX, separatorTop)), snap(ImVec2(leftSplitX, bottomY)), borderCol, baseThickness);
+        fg->AddLine(snap(ImVec2(rightSplitX, separatorTop)), snap(ImVec2(rightSplitX, bottomY)), borderCol, baseThickness);
+        fg->AddLine(snap(ImVec2(totalMin.x, separatorTop)), snap(ImVec2(totalMax.x, separatorTop)), borderCol, baseThickness);
+
+        ImVec2 topLeft(totalMin.x, topMin.y);
+        ImVec2 topRight(totalMax.x, topMin.y);
+        ImVec2 bottomLeft(totalMin.x, bottomY);
+        ImVec2 bottomRight(totalMax.x, bottomY);
+
+        thick_segment(topLeft, topLeft + ImVec2(vertexLen, 0.0f));
+        thick_segment(topLeft, topLeft + ImVec2(0.0f, vertexLen));
+        thick_segment(topRight, topRight - ImVec2(vertexLen, 0.0f));
+        thick_segment(topRight, topRight + ImVec2(0.0f, vertexLen));
+        thick_segment(bottomLeft, bottomLeft + ImVec2(vertexLen, 0.0f));
+        thick_segment(bottomLeft, bottomLeft - ImVec2(0.0f, vertexLen));
+        thick_segment(bottomRight, bottomRight - ImVec2(vertexLen, 0.0f));
+        thick_segment(bottomRight, bottomRight - ImVec2(0.0f, vertexLen));
+
+        ImVec2 leftSplitTop(leftSplitX, separatorTop);
+        ImVec2 leftSplitBottom(leftSplitX, bottomY);
+        ImVec2 rightSplitTop(rightSplitX, separatorTop);
+        ImVec2 rightSplitBottom(rightSplitX, bottomY);
+
+        thick_segment(leftSplitTop, leftSplitTop + ImVec2(0.0f, vertexLen));
+        thick_segment(leftSplitBottom - ImVec2(0.0f, vertexLen), leftSplitBottom);
+        thick_segment(rightSplitTop, rightSplitTop + ImVec2(0.0f, vertexLen));
+        thick_segment(rightSplitBottom - ImVec2(0.0f, vertexLen), rightSplitBottom);
+
+        thick_segment(leftSplitTop - ImVec2(junctionHalf, 0.0f), leftSplitTop + ImVec2(junctionHalf, 0.0f));
+        thick_segment(rightSplitTop - ImVec2(junctionHalf, 0.0f), rightSplitTop + ImVec2(junctionHalf, 0.0f));
+        thick_segment(leftSplitBottom - ImVec2(junctionHalf, 0.0f), leftSplitBottom + ImVec2(junctionHalf, 0.0f));
+        thick_segment(rightSplitBottom - ImVec2(junctionHalf, 0.0f), rightSplitBottom + ImVec2(junctionHalf, 0.0f));
 
         draw_style_editor(app);
         draw_toast_overlay(app);

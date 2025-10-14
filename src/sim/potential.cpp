@@ -26,6 +26,38 @@ void PotentialField::build(std::vector<std::complex<double>>& V) const {
         }
     }
 
+    // Add smooth radial wells
+    for (const auto& w : wells) {
+        double r0 = std::max(1e-4, w.radius);
+        double r0sq = r0 * r0;
+        for (int j = 0; j < Ny; ++j) {
+            double y = (j + 0.5) / double(Ny);
+            double dy = y - w.cy;
+            for (int i = 0; i < Nx; ++i) {
+                double x = (i + 0.5) / double(Nx);
+                double dx = x - w.cx;
+                double r2 = dx * dx + dy * dy;
+                double contrib = 0.0;
+                switch (w.profile) {
+                case RadialWell::Profile::Gaussian: {
+                    double t = r2 / r0sq;
+                    contrib = w.strength * std::exp(-t);
+                    break;
+                }
+                case RadialWell::Profile::SoftCoulomb: {
+                    contrib = w.strength / std::sqrt(r2 + r0sq);
+                    break;
+                }
+                case RadialWell::Profile::InverseSquare: {
+                    contrib = w.strength / (r2 + r0sq);
+                    break;
+                }
+                }
+                V[idx(i,j,Nx)] += cd(contrib, 0.0);
+            }
+        }
+    }
+
     // Add complex absorbing potential (CAP) sponge near boundaries
     // A smooth polynomial ramp: w(s) = s^2 (3 - 2s) in [0,1]
     const int wx = std::max(1, (int)std::round(cap_ratio * Nx));
@@ -49,4 +81,3 @@ void PotentialField::build(std::vector<std::complex<double>>& V) const {
 }
 
 } // namespace sim
-

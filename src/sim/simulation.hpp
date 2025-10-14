@@ -15,7 +15,7 @@ struct Simulation {
     int Nx{300}, Ny{300};
     double Lx{1.0}, Ly{1.0};      // physical domain size (arbitrary units)
     double dx{Lx/Nx}, dy{Ly/Ny};  // grid spacing
-    double dt{0.00025};
+    double dt{0.0001};
     bool running{false};
 
     // Fields
@@ -36,6 +36,7 @@ struct Simulation {
     void clearPsi();            // set psi = 0
     void injectGaussian(const Packet& p); // add a Gaussian packet to psi
     void addBox(const Box& b);  // add a rectangle to potential & rebuild V
+    void addWell(const RadialWell& w); // add a smooth radial feature
 
     void step();                // one CN-ADI step
     void stepN(int n);
@@ -49,4 +50,3 @@ struct Simulation {
 };
 
 } // namespace sim
-
