@@ -45,6 +45,12 @@ struct AppState {
     sim::ViewMode view{sim::ViewMode::MagnitudePhase};
     bool showPotential{true};
     bool normalizeView{true};
+    bool lockAspect{false};
+    bool initialGridApplied{false};
+    double viewportAspect{1.0};
+    float viewportAvailWidth{1.0f};
+    float viewportAvailHeight{1.0f};
+    enum class LastEdited { None, Nx, Ny } lastEdited{LastEdited::None};
 
     // Packet placement defaults
     double packetAmplitude{1.0};
@@ -58,7 +64,7 @@ struct AppState {
     // Radial well placement defaults
     double wellStrength{200.0};
     double wellRadius{0.08};
-    sim::RadialWell::Profile wellProfile{sim::RadialWell::Profile::Gaussian};
+    sim::RadialWell::Profile wellProfile{sim::RadialWell::Profile::SoftCoulomb};
 
     // Interaction state
     enum class Mode { Drag, AddPacket, AddBox, AddWell } mode{Mode::Drag};
@@ -128,7 +134,7 @@ static void StyleColorsDashboard(ImGuiStyle* dst = nullptr) {
     style->WindowRounding = 2.0f;
     style->FrameRounding = 2.0f;
     style->GrabRounding = 2.0f;
-    style->WindowBorderSize = 1.0f;
+    style->WindowBorderSize = 0.0f;
     style->FrameBorderSize = 1.0f;
     style->ScrollbarSize = 12.0f;
     style->ItemSpacing = ImVec2(8, 6);
@@ -597,20 +603,106 @@ static void draw_settings(AppState& app) {
         double dt_min = 1e-5, dt_max = 5e-3;
         ImGui::SliderScalar("dt", ImGuiDataType_Double, &app.sim.dt, &dt_min, &dt_max, "%.6f", ImGuiSliderFlags_Logarithmic);
     }
-    int nx = app.sim.Nx;
-    int ny = app.sim.Ny;
-    if (ImGui::InputInt("Nx", &nx) | ImGui::InputInt("Ny", &ny)) {
-        nx = std::clamp(nx, 16, 1024);
-        ny = std::clamp(ny, 16, 1024);
-        if (nx != app.sim.Nx || ny != app.sim.Ny) {
-            app.sim.resize(nx, ny);
-            app.selectedBox = -1;
-            app.selectedPacket = -1;
-            app.selectedWell = -1;
-            app.boxEditorOpen = false;
-            app.packetEditorOpen = false;
-            app.wellEditorOpen = false;
+    const int originalNx = app.sim.Nx;
+    const int originalNy = app.sim.Ny;
+    int nx = originalNx;
+   
+    const auto clampGrid = [](int v) { return std::clamp(v, 16, 1024); };
+
+    bool nxValueChanged = ImGui::InputInt("Nx", &nx);
+    bool nxActive = ImGui::IsItemActive();
+    if (nxActive) app.lastEdited = AppState::LastEdited::Nx;
+    nx = clampGrid(nx);
+
+    int ny = originalNy;
+    bool nyValueChanged = ImGui::InputInt("Ny", &ny);
+    bool nyActive = ImGui::IsItemActive();
+    if (nyActive) app.lastEdited = AppState::LastEdited::Ny;
+    ny = clampGrid(ny);
+
+    ImGui::SameLine();
+    bool lockToggled = ImGui::Checkbox("Lock aspect", &app.lockAspect);
+
+    double aspect = (app.viewportAspect > 1e-6)
+                        ? app.viewportAspect
+                        : ((app.sim.Ny > 0)
+                               ? static_cast<double>(app.sim.Nx) / static_cast<double>(app.sim.Ny)
+                               : 1.0);
+
+    const double availW = static_cast<double>(std::max(app.viewportAvailWidth, 1.0f));
+    const double availH = static_cast<double>(std::max(app.viewportAvailHeight, 1.0f));
+
+    auto compute_best_ny = [&](int targetNx) {
+        if (targetNx <= 0 || aspect <= 1e-9) return clampGrid(std::max(originalNy, 16));
+        long double ideal = static_cast<long double>(targetNx) / aspect;
+        int floorNy = clampGrid(static_cast<int>(std::floor(ideal)));
+        int ceilNy = clampGrid(static_cast<int>(std::ceil(ideal)));
+        if (floorNy == ceilNy) return floorNy;
+        double sx = availW / std::max(targetNx, 1);
+        double syFloor = availH / std::max(floorNy, 1);
+        double syCeil = availH / std::max(ceilNy, 1);
+        double diffFloor = std::fabs(sx - syFloor);
+        double diffCeil = std::fabs(sx - syCeil);
+        const double eps = 1e-9;
+        if (diffFloor < diffCeil - eps) return floorNy;
+        if (diffCeil < diffFloor - eps) return ceilNy;
+        double limitFloor = std::min(sx, syFloor);
+        double limitCeil = std::min(sx, syCeil);
+        return (limitFloor >= limitCeil) ? floorNy : ceilNy;
+    };
+
+    auto compute_best_nx = [&](int targetNy) {
+        if (targetNy <= 0 || aspect <= 1e-9) return clampGrid(std::max(originalNx, 16));
+        long double ideal = static_cast<long double>(targetNy) * aspect;
+        int floorNx = clampGrid(static_cast<int>(std::floor(ideal)));
+        int ceilNx = clampGrid(static_cast<int>(std::ceil(ideal)));
+        if (floorNx == ceilNx) return floorNx;
+        double sy = availH / std::max(targetNy, 1);
+        double sxFloor = availW / std::max(floorNx, 1);
+        double sxCeil = availW / std::max(ceilNx, 1);
+        double diffFloor = std::fabs(sxFloor - sy);
+        double diffCeil = std::fabs(sxCeil - sy);
+        const double eps = 1e-9;
+        if (diffFloor < diffCeil - eps) return floorNx;
+        if (diffCeil < diffFloor - eps) return ceilNx;
+        double limitFloor = std::min(sxFloor, sy);
+        double limitCeil = std::min(sxCeil, sy);
+        return (limitFloor >= limitCeil) ? floorNx : ceilNx;
+    };
+
+    if (app.lockAspect && aspect > 1e-6) {
+        if (lockToggled && app.lockAspect) {
+            if (app.lastEdited == AppState::LastEdited::Ny || (nyValueChanged && !nxValueChanged)) {
+                nx = compute_best_nx(ny);
+            } else {
+                ny = compute_best_ny(nx);
+            }
+        } else {
+            if (nxValueChanged && !nyValueChanged) {
+                ny = compute_best_ny(nx);
+            } else if (nyValueChanged && !nxValueChanged) {
+                nx = compute_best_nx(ny);
+            } else if (nxValueChanged && nyValueChanged) {
+                if (app.lastEdited == AppState::LastEdited::Ny) {
+                    nx = compute_best_nx(ny);
+                } else {
+                    ny = compute_best_ny(nx);
+                }
+            }
         }
+    }
+
+    nx = clampGrid(nx);
+    ny = clampGrid(ny);
+
+    if (nx != app.sim.Nx || ny != app.sim.Ny) {
+        app.sim.resize(nx, ny);
+        app.selectedBox = -1;
+        app.selectedPacket = -1;
+        app.selectedWell = -1;
+        app.boxEditorOpen = false;
+        app.packetEditorOpen = false;
+        app.wellEditorOpen = false;
     }
     double mass = app.sim.mass();
     double left = 0.0, right = 0.0;
@@ -803,7 +895,7 @@ static void draw_tools_panel(AppState& app) {
 
 static void draw_view_content(AppState& app) {
     ImVec2 avail = ImGui::GetContentRegionAvail();
-    ImVec2 target = fit_size_keep_aspect(ImVec2((float)app.sim.Nx, (float)app.sim.Ny), avail);
+    ImVec2 target = fit_size_keep_aspect(ImVec2((float)app.sim.Lx, (float)app.sim.Ly), avail);
     ImVec2 cur = ImGui::GetCursorScreenPos();
 
     std::vector<unsigned char> rgba;
@@ -1230,7 +1322,7 @@ static void draw_view_content(AppState& app) {
                           std::real(V), std::imag(V));
     }
 
-    if (ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows)) {
+    if (!ImGui::GetIO().WantCaptureKeyboard) {
         if (ImGui::IsKeyPressed(ImGuiKey_Space)) app.sim.running = !app.sim.running;
         if (ImGui::IsKeyPressed(ImGuiKey_R)) app.sim.reset();
         if (ImGui::IsKeyPressed(ImGuiKey_Delete)) {
@@ -1689,6 +1781,47 @@ int run_gui(GLFWwindow* window) {
         float usableHeight = std::max(0.0f, frame_io.DisplaySize.y - contentY);
         float view_w = std::max(0.0f, frame_io.DisplaySize.x - left_w - tools_w);
 
+        if (view_w > 1.0f && usableHeight > 1.0f) {
+            app.viewportAvailWidth = view_w;
+            app.viewportAvailHeight = usableHeight;
+            // Overestimate width slightly for aspect, as aspect != 1.24 on 1080p in testing
+            app.viewportAspect = (static_cast<double>(view_w) + static_cast<double>(5.0f)) / static_cast<double>(usableHeight);
+            if (!app.initialGridApplied) {
+                int baseNy = app.sim.Ny;
+                long double idealNx = static_cast<long double>(baseNy) * app.viewportAspect;
+                int floorNx = std::clamp(static_cast<int>(std::floor(idealNx)), 16, 1024);
+                int ceilNx = std::clamp(static_cast<int>(std::ceil(idealNx)), 16, 1024);
+                int targetNx = floorNx;
+                if (floorNx != ceilNx) {
+                    double sy = static_cast<double>(usableHeight) / std::max(baseNy, 1);
+                    double sxFloor = static_cast<double>(view_w) / std::max(floorNx, 1);
+                    double sxCeil = static_cast<double>(view_w) / std::max(ceilNx, 1);
+                    double diffFloor = std::fabs(sxFloor - sy);
+                    double diffCeil = std::fabs(sxCeil - sy);
+                    const double eps = 1e-9;
+                    if (diffFloor < diffCeil - eps)
+                        targetNx = floorNx;
+                    else if (diffCeil < diffFloor - eps)
+                        targetNx = ceilNx;
+                    else {
+                        double limitFloor = std::min(sxFloor, sy);
+                        double limitCeil = std::min(sxCeil, sy);
+                        targetNx = (limitFloor >= limitCeil) ? floorNx : ceilNx;
+                    }
+                }
+                if (targetNx != app.sim.Nx) {
+                    app.sim.resize(targetNx, baseNy);
+                    app.selectedBox = -1;
+                    app.selectedPacket = -1;
+                    app.selectedWell = -1;
+                    app.boxEditorOpen = false;
+                    app.packetEditorOpen = false;
+                    app.wellEditorOpen = false;
+                }
+                app.initialGridApplied = true;
+            }
+        }
+
         ImGuiWindowFlags paneFlags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoMove |
                                      ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings |
                                      ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoBringToFrontOnFocus |
@@ -1697,9 +1830,10 @@ int run_gui(GLFWwindow* window) {
         ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
 
+        const ImGuiWindowFlags settingsFlags = paneFlags | ImGuiWindowFlags_NoScrollbar;
         ImGui::SetNextWindowPos(ImVec2(0.0f, contentY), ImGuiCond_Always);
         ImGui::SetNextWindowSize(ImVec2(left_w, usableHeight), ImGuiCond_Always);
-        ImGui::Begin("##SettingsPane", nullptr, paneFlags);
+        ImGui::Begin("##SettingsPane", nullptr, settingsFlags);
         draw_settings(app);
         ImVec2 settingsMin = ImGui::GetWindowPos();
         ImVec2 settingsMax = settingsMin + ImGui::GetWindowSize();

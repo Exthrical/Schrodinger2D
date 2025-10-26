@@ -12,12 +12,19 @@ Simulation::Simulation() {
 void Simulation::resize(int newNx, int newNy) {
     Nx = std::max(8, newNx);
     Ny = std::max(8, newNy);
-    dx = Lx / Nx;
-    dy = Ly / Ny;
+    const int minDim = std::max(8, std::min(Nx, Ny));
+    const double cell = 1.0 / static_cast<double>(minDim);
+    Lx = Nx * cell;
+    Ly = Ny * cell;
+    dx = cell;
+    dy = cell;
     psi.assign(static_cast<size_t>(Nx*Ny), std::complex<double>(0.0, 0.0));
     pfield.Nx = Nx;
     pfield.Ny = Ny;
+    pfield.Lx = Lx;
+    pfield.Ly = Ly;
     pfield.build(V);
+    reset();
 }
 
 void Simulation::clearPsi() {
@@ -28,26 +35,29 @@ void Simulation::reset() {
     clearPsi();
     pfield.Nx = Nx;
     pfield.Ny = Ny;
+    pfield.Lx = Lx;
+    pfield.Ly = Ly;
     pfield.build(V);
     for (const auto& p : packets) injectGaussian(p);
 }
 
 void Simulation::injectGaussian(const Packet& p) {
-    // Convert normalized center to indices
-    double cx = p.cx * (Nx - 1);
-    double cy = p.cy * (Ny - 1);
-    double sigx = p.sigma * Nx; // interpret sigma in normalized domain units
-    double sigy = p.sigma * Ny;
+    // Convert normalized parameters to physical coordinates
+    const double cx_phys = p.cx * Lx;
+    const double cy_phys = p.cy * Ly;
+    const double sig_base = std::max(1e-12, p.sigma * std::min(Lx, Ly));
+    const double sigx = sig_base;
+    const double sigy = sig_base;
     const std::complex<double> I(0.0, 1.0);
     for (int j = 0; j < Ny; ++j) {
-        double dyc = (j - cy) / sigy;
+        double y = (j + 0.5) * dy;
+        double dyc = (y - cy_phys) / sigy;
         for (int i = 0; i < Nx; ++i) {
-            double dxc = (i - cx) / sigx;
+            double x = (i + 0.5) * dx;
+            double dxc = (x - cx_phys) / sigx;
             double g = std::exp(-0.5 * (dxc * dxc + dyc * dyc));
-            // plane-wave factor exp(i k·r). Interpret k in radians per normalized unit.
-            double x = double(i) / double(Nx - 1);
-            double y = double(j) / double(Ny - 1);
-            double phase = p.kx * (x - p.cx) + p.ky * (y - p.cy);
+            // plane-wave factor exp(i k·r). Interpret k in radians per unit length.
+            double phase = p.kx * (x - cx_phys) + p.ky * (y - cy_phys);
             std::complex<double> w = p.amplitude * g * std::exp(I * phase);
             psi[idx(i, j)] += w;
         }

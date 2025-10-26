@@ -27,15 +27,19 @@ void PotentialField::build(std::vector<std::complex<double>>& V) const {
     }
 
     // Add smooth radial wells
+    const double minLength = std::min(Lx, Ly);
+
     for (const auto& w : wells) {
-        double r0 = std::max(1e-4, w.radius);
+        double r0 = std::max(1e-4, w.radius * minLength);
         double r0sq = r0 * r0;
+        double cx = w.cx * Lx;
+        double cy = w.cy * Ly;
         for (int j = 0; j < Ny; ++j) {
-            double y = (j + 0.5) / double(Ny);
-            double dy = y - w.cy;
+            double y = (j + 0.5) * (Ly / Ny);
+            double dy = y - cy;
             for (int i = 0; i < Nx; ++i) {
-                double x = (i + 0.5) / double(Nx);
-                double dx = x - w.cx;
+                double x = (i + 0.5) * (Lx / Nx);
+                double dx = x - cx;
                 double r2 = dx * dx + dy * dy;
                 double contrib = 0.0;
                 switch (w.profile) {

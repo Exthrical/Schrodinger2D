@@ -32,6 +32,8 @@ struct Packet {
 // Potential field: sum of static boxes + absorbing boundary sponge
 struct PotentialField {
     int Nx{128}, Ny{128};
+    double Lx{1.0};
+    double Ly{1.0};
     double cap_strength{1.0};  // absorption coefficient
     double cap_ratio{0.1};     // fraction of domain width used for sponge (each side)
     std::vector<Box> boxes;     // static rectangular features
