@@ -45,7 +45,7 @@ struct AppState {
     sim::ViewMode view{sim::ViewMode::MagnitudePhase};
     bool showPotential{true};
     bool normalizeView{true};
-    bool lockAspect{false};
+    bool lockAspect{true};
     bool initialGridApplied{false};
     double viewportAspect{1.0};
     float viewportAvailWidth{1.0f};
@@ -368,6 +368,29 @@ static void load_default_doubleslit_scene(AppState& app) {
     app.sim.reset();
 }
 
+static void load_default_doubleslit2_scene(AppState& app) {
+    app.sim.running = false;
+    app.sim.pfield.boxes.clear();
+    app.sim.pfield.wells.clear();
+    app.sim.packets.clear();
+    app.sim.dt = 0.000025;
+    app.selectedBox = -1;
+    app.selectedPacket = -1;
+    app.selectedWell = -1;
+    app.boxEditorOpen = false;
+    app.packetEditorOpen = false;
+    app.wellEditorOpen = false;
+
+    app.sim.pfield.boxes.push_back(sim::Box{0.48, 0.0, 0.52, 0.4, 100000.0});
+    app.sim.pfield.boxes.push_back(sim::Box{0.48, 0.6, 0.52, 1.0, 100000.0});
+    app.sim.pfield.boxes.push_back(sim::Box{0.48, 0.45, 0.52, 0.55, 100000.0});
+    app.sim.pfield.build(app.sim.V);
+
+    sim::Packet p1{0.25, 0.5, 0.05, 1.0, 192.0, 0.0};
+    app.sim.packets.push_back(p1);
+    app.sim.reset();
+}
+
 static void load_counterpropagating_scene(AppState& app) {
     app.sim.running = false;
     app.sim.pfield.boxes.clear();
@@ -620,7 +643,6 @@ static void draw_settings(AppState& app) {
     if (nyActive) app.lastEdited = AppState::LastEdited::Ny;
     ny = clampGrid(ny);
 
-    ImGui::SameLine();
     bool lockToggled = ImGui::Checkbox("Lock aspect", &app.lockAspect);
 
     double aspect = (app.viewportAspect > 1e-6)
@@ -1593,6 +1615,10 @@ static void draw_top_bar(AppState& app, GLFWwindow* window, float& out_height, I
             load_default_doubleslit_scene(app);
             push_toast(app, "Loaded double slit scene", 2.5f);
         }
+        if (ImGui::MenuItem("Double Slit (High Energy)")) {
+            load_default_doubleslit2_scene(app);
+            push_toast(app, "Loaded double slit scene", 2.5f);
+        }
         if (ImGui::MenuItem("Two Packets")) {
             load_default_twowall_scene(app);
             push_toast(app, "Loaded two packet scene", 2.5f);
@@ -1757,7 +1783,7 @@ int run_gui(GLFWwindow* window) {
     ImGui_ImplOpenGL2_Init();
 
     AppState app;
-    load_default_doubleslit_scene(app);
+    load_default_doubleslit2_scene(app);
 
     // Main loop
     while (!glfwWindowShouldClose(window)) {
