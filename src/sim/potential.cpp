@@ -56,6 +56,17 @@ void PotentialField::build(std::vector<std::complex<double>>& V) const {
                     contrib = w.strength / (r2 + r0sq);
                     break;
                 }
+                case RadialWell::Profile::HarmonicOscillator: {
+                    // Parabolic trap that reaches w.strength at the center and 0 at radius r0
+                    double r = std::sqrt(r2);
+                    if (r < r0) {
+                        double t = r / r0;
+                        contrib = w.strength * (1.0 - t * t);
+                    } else {
+                        contrib = 0.0;
+                    }
+                    break;
+                }
                 }
                 V[idx(i,j,Nx)] += cd(contrib, 0.0);
             }

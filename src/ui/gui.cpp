@@ -118,6 +118,9 @@ static void load_default_doubleslit_scene(AppState& app);
 static void load_counterpropagating_scene(AppState& app);
 static void load_waveguide_scene(AppState& app);
 static void load_trap_scene(AppState& app);
+static void load_well_lattice_scene(AppState& app);
+static void load_ring_resonator_scene(AppState& app);
+static void load_barrier_gauntlet_scene(AppState& app);
 static void push_toast(AppState& app, const std::string& message, float duration_seconds);
 static bool save_current_view_png(const AppState& app, const std::filesystem::path& path);
 static std::filesystem::path default_screenshot_path();
@@ -373,7 +376,7 @@ static void load_default_doubleslit2_scene(AppState& app) {
     app.sim.pfield.boxes.clear();
     app.sim.pfield.wells.clear();
     app.sim.packets.clear();
-    app.sim.dt = 0.000025;
+    app.sim.dt = 0.000010;
     app.selectedBox = -1;
     app.selectedPacket = -1;
     app.selectedWell = -1;
@@ -519,6 +522,161 @@ static void load_central_well_2_scene(AppState& app) {
 
     sim::Packet orbit1{0.175, 0.5, 0.035, 0.85, 65.0, 25.0};
     app.sim.packets.push_back(orbit1);
+    app.sim.reset();
+}
+
+static void load_central_well_3_scene(AppState& app) {
+    app.sim.running = false;
+    app.sim.pfield.boxes.clear();
+    app.sim.pfield.wells.clear();
+    app.sim.packets.clear();
+    app.sim.dt = 0.000025;
+    app.selectedBox = -1;
+    app.selectedPacket = -1;
+    app.selectedWell = -1;
+    app.boxEditorOpen = false;
+    app.packetEditorOpen = false;
+    app.wellEditorOpen = false;
+
+    sim::RadialWell well;
+    well.cx = 0.5; well.cy = 0.5;
+    well.strength = -4000.0;
+    well.radius = 0.18;
+    well.profile = sim::RadialWell::Profile::HarmonicOscillator;
+    app.sim.pfield.wells.push_back(well);
+    app.sim.pfield.build(app.sim.V);
+
+    sim::Packet orbit1{0.425, 0.5, 0.035, 0.85, 15.0, 0.0};
+    app.sim.packets.push_back(orbit1);
+    app.sim.reset();
+}
+
+static void load_well_lattice_scene(AppState& app) {
+    app.sim.running = false;
+    app.sim.pfield.boxes.clear();
+    app.sim.pfield.wells.clear();
+    app.sim.packets.clear();
+    app.sim.dt = 0.00002;
+    app.selectedBox = -1;
+    app.selectedPacket = -1;
+    app.selectedWell = -1;
+    app.boxEditorOpen = false;
+    app.packetEditorOpen = false;
+    app.wellEditorOpen = false;
+
+    const int cols = 5;
+    const int rows = 4;
+    const double startX = 0.18;
+    const double startY = 0.2;
+    const double gapX = 0.14;
+    const double gapY = 0.16;
+    for (int j = 0; j < rows; ++j) {
+        for (int i = 0; i < cols; ++i) {
+            sim::RadialWell w;
+            w.cx = startX + i * gapX;
+            w.cy = startY + j * gapY;
+            w.radius = 0.05;
+            bool attractive = ((i + j) % 2) == 0;
+            w.strength = attractive ? -320.0 : 320.0;
+            w.profile = attractive ? sim::RadialWell::Profile::SoftCoulomb : sim::RadialWell::Profile::Gaussian;
+            app.sim.pfield.wells.push_back(w);
+        }
+    }
+    app.sim.pfield.build(app.sim.V);
+
+    sim::Packet beamA{0.08, 0.25, 0.03, 0.85, 60.0, 2.0};
+    sim::Packet beamB{0.08, 0.75, 0.03, 0.85, 55.0, -2.0};
+    app.sim.packets.push_back(beamA);
+    app.sim.packets.push_back(beamB);
+    app.sim.reset();
+}
+
+static void load_ring_resonator_scene(AppState& app) {
+    app.sim.running = false;
+    app.sim.pfield.boxes.clear();
+    app.sim.pfield.wells.clear();
+    app.sim.packets.clear();
+    app.sim.dt = 0.00002;
+    app.selectedBox = -1;
+    app.selectedPacket = -1;
+    app.selectedWell = -1;
+    app.boxEditorOpen = false;
+    app.packetEditorOpen = false;
+    app.wellEditorOpen = false;
+
+    const int segments = 12;
+    const double tau = 6.28318530717958647692;
+    for (int i = 0; i < segments; ++i) {
+        double angle = (tau / segments) * i;
+        sim::RadialWell wall;
+        wall.cx = 0.5 + 0.28 * std::cos(angle);
+        wall.cy = 0.5 + 0.28 * std::sin(angle);
+        wall.radius = 0.045;
+        wall.strength = 900.0;
+        wall.profile = sim::RadialWell::Profile::Gaussian;
+        app.sim.pfield.wells.push_back(wall);
+    }
+    sim::RadialWell core;
+    core.cx = 0.5;
+    core.cy = 0.5;
+    core.radius = 0.07;
+    core.strength = -450.0;
+    core.profile = sim::RadialWell::Profile::HarmonicOscillator;
+    app.sim.pfield.wells.push_back(core);
+
+    app.sim.pfield.build(app.sim.V);
+
+    sim::Packet runner1{0.35, 0.5, 0.035, 0.8, 0.0, 24.0};
+    sim::Packet runner2{0.65, 0.5, 0.035, 0.8, 0.0, -24.0};
+    sim::Packet runner3{0.5, 0.65, 0.03, 0.6, -18.0, 0.0};
+    app.sim.packets.push_back(runner1);
+    app.sim.packets.push_back(runner2);
+    app.sim.packets.push_back(runner3);
+    app.sim.reset();
+}
+
+static void load_barrier_gauntlet_scene(AppState& app) {
+    app.sim.running = false;
+    app.sim.pfield.boxes.clear();
+    app.sim.pfield.wells.clear();
+    app.sim.packets.clear();
+    app.sim.dt = 0.00002;
+    app.selectedBox = -1;
+    app.selectedPacket = -1;
+    app.selectedWell = -1;
+    app.boxEditorOpen = false;
+    app.packetEditorOpen = false;
+    app.wellEditorOpen = false;
+
+    app.sim.pfield.boxes.push_back(sim::Box{0.12, 0.1, 0.88, 0.18, 3400.0});
+    app.sim.pfield.boxes.push_back(sim::Box{0.12, 0.82, 0.88, 0.9, 3400.0});
+    app.sim.pfield.boxes.push_back(sim::Box{0.12, 0.28, 0.32, 0.72, 3400.0});
+    app.sim.pfield.boxes.push_back(sim::Box{0.68, 0.28, 0.88, 0.72, 3400.0});
+    app.sim.pfield.boxes.push_back(sim::Box{0.44, 0.44, 0.56, 0.56, 4200.0});
+
+    for (int i = 0; i < 3; ++i) {
+        sim::RadialWell sink;
+        sink.cx = 0.35 + 0.15 * i;
+        sink.cy = (i % 2 == 0) ? 0.3 : 0.7;
+        sink.radius = 0.06;
+        sink.strength = -380.0;
+        sink.profile = sim::RadialWell::Profile::InverseSquare;
+        app.sim.pfield.wells.push_back(sink);
+    }
+    sim::RadialWell exit;
+    exit.cx = 0.85;
+    exit.cy = 0.5;
+    exit.radius = 0.07;
+    exit.strength = -520.0;
+    exit.profile = sim::RadialWell::Profile::SoftCoulomb;
+    app.sim.pfield.wells.push_back(exit);
+
+    app.sim.pfield.build(app.sim.V);
+
+    sim::Packet beam{0.18, 0.5, 0.035, 0.9, 48.0, 0.0};
+    sim::Packet probe{0.22, 0.35, 0.025, 0.7, 60.0, 12.0};
+    app.sim.packets.push_back(beam);
+    app.sim.packets.push_back(probe);
     app.sim.reset();
 }
 
@@ -767,10 +925,11 @@ static void draw_settings(AppState& app) {
         ImGui::SliderScalar("Strength", ImGuiDataType_Double, &app.wellStrength, &vmin, &vmax, "%.1f");
         vmin = 0.01; vmax = 0.5;
         ImGui::SliderScalar("Radius", ImGuiDataType_Double, &app.wellRadius, &vmin, &vmax, "%.3f");
-        const char* profiles[] = {"Gaussian", "Soft Coulomb", "Inverse Square"};
+        const char* profiles[] = {"Gaussian", "Soft Coulomb", "Inverse Square", "Harmonic Oscillator"};
         int profileIdx = static_cast<int>(app.wellProfile);
         if (ImGui::Combo("Profile", &profileIdx, profiles, IM_ARRAYSIZE(profiles))) {
-            profileIdx = std::clamp(profileIdx, 0, 2);
+            const int profileCount = static_cast<int>(IM_ARRAYSIZE(profiles));
+            profileIdx = std::clamp(profileIdx, 0, profileCount - 1);
             app.wellProfile = static_cast<sim::RadialWell::Profile>(profileIdx);
         }
     }
@@ -1501,10 +1660,11 @@ static void draw_object_editors(AppState& app) {
                     w.radius = std::clamp(w.radius, rMin, rMax);
                     rebuild = true;
                 }
-                const char* profileNames[] = {"Gaussian", "Soft Coulomb", "Inverse Square"};
+                const char* profileNames[] = {"Gaussian", "Soft Coulomb", "Inverse Square", "Harmonic Oscillator"};
                 int profileIdx = static_cast<int>(w.profile);
                 if (ImGui::Combo("Profile", &profileIdx, profileNames, IM_ARRAYSIZE(profileNames))) {
-                    profileIdx = std::clamp(profileIdx, 0, 2);
+                    const int profileCount = static_cast<int>(IM_ARRAYSIZE(profileNames));
+                    profileIdx = std::clamp(profileIdx, 0, profileCount - 1);
                     w.profile = static_cast<sim::RadialWell::Profile>(profileIdx);
                     rebuild = true;
                 }
@@ -1642,6 +1802,22 @@ static void draw_top_bar(AppState& app, GLFWwindow* window, float& out_height, I
         if (ImGui::MenuItem("Central Well 2")) {
             load_central_well_2_scene(app);
             push_toast(app, "Loaded central radial well (2)", 2.5f);
+        }
+        if (ImGui::MenuItem("Quantum Harmonic Oscillator")) {
+            load_central_well_3_scene(app);
+            push_toast(app, "Quantum Harmonic Oscillator", 2.5f);
+        }
+        if (ImGui::MenuItem("Well Lattice Fly-through")) {
+            load_well_lattice_scene(app);
+            push_toast(app, "Loaded lattice traversal", 2.5f);
+        }
+        if (ImGui::MenuItem("Ring Resonator")) {
+            load_ring_resonator_scene(app);
+            push_toast(app, "Loaded ring resonator", 2.5f);
+        }
+        if (ImGui::MenuItem("Barrier Gauntlet")) {
+            load_barrier_gauntlet_scene(app);
+            push_toast(app, "Loaded barrier gauntlet", 2.5f);
         }
         ImGui::EndMenu();
     }

@@ -12,7 +12,7 @@ struct Box {
 };
 
 struct RadialWell {
-    enum class Profile { Gaussian, SoftCoulomb, InverseSquare };
+    enum class Profile { Gaussian, SoftCoulomb, InverseSquare, HarmonicOscillator };
 
     double cx{0.5};
     double cy{0.5};
