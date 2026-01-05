@@ -2,6 +2,8 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
+#include <numeric>
 
 namespace sim {
 
@@ -98,6 +100,171 @@ void Simulation::mass_split(double& left, double& right) const {
         }
     }
     left = l; right = r;
+}
+
+static void tridiagonal_eigen(std::vector<double> diag, std::vector<double> off, std::vector<double>& evals, std::vector<std::vector<double>>& evecs) {
+    const int n = static_cast<int>(diag.size());
+    evals = diag;
+    evecs.assign(n, std::vector<double>(n, 0.0));
+    for (int i = 0; i < n; ++i) evecs[i][i] = 1.0;
+    if (n == 0) return;
+    off.push_back(0.0); // pad
+    const double eps = std::numeric_limits<double>::epsilon();
+    for (int l = 0; l < n; ++l) {
+        int iter = 0;
+        while (true) {
+            int m = l;
+            for (; m < n - 1; ++m) {
+                double sum = std::fabs(evals[m]) + std::fabs(evals[m + 1]);
+                if (std::fabs(off[m]) <= eps * sum) break;
+            }
+            if (m == l) break;
+            if (++iter > 60) break;
+            double g = (evals[l + 1] - evals[l]) / (2.0 * off[l]);
+            double r = std::hypot(g, 1.0);
+            g = evals[m] - evals[l] + off[l] / (g + std::copysign(r, g));
+            double s = 1.0, c = 1.0, p = 0.0;
+            for (int i = m - 1; i >= l; --i) {
+                double f = s * off[i];
+                double b = c * off[i];
+                if (std::fabs(f) >= std::fabs(g)) {
+                    c = g / f;
+                    r = std::hypot(c, 1.0);
+                    off[i + 1] = f * r;
+                    s = 1.0 / r;
+                    c *= s;
+                } else {
+                    s = f / g;
+                    r = std::hypot(s, 1.0);
+                    off[i + 1] = g * r;
+                    c = 1.0 / r;
+                    s *= c;
+                }
+                g = evals[i + 1] - p;
+                r = (evals[i] - g) * s + 2.0 * b * c;
+                p = s * r;
+                evals[i + 1] = g + p;
+                g = c * r - b;
+                for (int k = 0; k < n; ++k) {
+                    double fz = evecs[k][i + 1];
+                    evecs[k][i + 1] = s * evecs[k][i] + c * fz;
+                    evecs[k][i] = c * evecs[k][i] - s * fz;
+                }
+            }
+            evals[l] -= p;
+            off[l] = g;
+            off[m] = 0.0;
+        }
+    }
+}
+
+std::vector<EigenState> Simulation::compute_eigenstates(int modes, int maxBasis, int maxIter, double tol) const {
+    const int N = Nx * Ny;
+    modes = std::max(1, modes);
+    maxBasis = std::max(modes, maxBasis);
+    maxIter = std::max(maxIter, modes);
+    const int maxSteps = std::min(maxBasis, maxIter);
+    const double h = dx; // dx == dy by construction
+    const double vol = dx * dy;
+
+    auto applyH = [&](const std::vector<double>& x, std::vector<double>& y) {
+        y.assign(N, 0.0);
+        for (int j = 0; j < Ny; ++j) {
+            for (int i = 0; i < Nx; ++i) {
+                const int k = idx(i, j);
+                double center = x[k];
+                double lap = 0.0;
+                if (i > 0) lap += x[idx(i - 1, j)];
+                if (i < Nx - 1) lap += x[idx(i + 1, j)];
+                if (j > 0) lap += x[idx(i, j - 1)];
+                if (j < Ny - 1) lap += x[idx(i, j + 1)];
+                lap -= 4.0 * center;
+                lap /= (h * h);
+                double v = std::real(V[k]);
+                y[k] = -0.5 * lap + v * center;
+            }
+        }
+    };
+
+    auto dot = [&](const std::vector<double>& a, const std::vector<double>& b) {
+        double s = 0.0;
+        for (int i = 0; i < N; ++i) s += a[i] * b[i];
+        return s * vol;
+    };
+
+    // initial vector
+    std::vector<double> q(N, 0.0), q_prev(N, 0.0);
+    for (int i = 0; i < N; i += std::max(1, N / 50)) q[i] = 1.0;
+    double nrm = std::sqrt(dot(q, q));
+    if (nrm < 1e-12) q[0] = 1.0, nrm = 1.0;
+    for (double& v : q) v /= nrm;
+
+    std::vector<double> alphas;
+    std::vector<double> betas;
+    std::vector<std::vector<double>> basis;
+    basis.reserve(maxBasis);
+    basis.push_back(q);
+
+    std::vector<double> w(N, 0.0);
+    double beta = 0.0;
+    for (int iter = 0; iter < maxSteps; ++iter) {
+        applyH(q, w);
+        for (int i = 0; i < N; ++i) w[i] -= beta * q_prev[i];
+        double alpha = dot(q, w);
+        for (int i = 0; i < N; ++i) w[i] -= alpha * q[i];
+        double nextBeta = std::sqrt(dot(w, w));
+        alphas.push_back(alpha);
+        if (iter > 0) betas.push_back(beta);
+        if (nextBeta < tol) {
+            break;
+        }
+        q_prev.swap(q);
+        q.swap(w);
+        for (double& v : q) v /= nextBeta;
+        basis.push_back(q);
+        beta = nextBeta;
+    }
+    const int m = static_cast<int>(alphas.size());
+    if (m == 0) return {};
+
+    std::vector<double> evals;
+    std::vector<std::vector<double>> evecsSmall;
+    tridiagonal_eigen(alphas, betas, evals, evecsSmall);
+
+    std::vector<int> order(m);
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(order.begin(), order.end(), [&](int a, int b) { return evals[a] < evals[b]; });
+
+    int take = std::min(modes, m);
+    std::vector<EigenState> results;
+    results.reserve(take);
+    for (int t = 0; t < take; ++t) {
+        int idxMode = order[t];
+        std::vector<double> phi(N, 0.0);
+        for (int b = 0; b < m; ++b) {
+            double coeff = evecsSmall[b][idxMode];
+            const auto& qb = basis[b];
+            for (int i = 0; i < N; ++i) {
+                phi[i] += coeff * qb[i];
+            }
+        }
+        double norm = std::sqrt(dot(phi, phi));
+        if (norm < 1e-12) continue;
+        double invNorm = 1.0 / norm;
+        EigenState es;
+        es.energy = evals[idxMode];
+        es.psi.resize(N);
+        for (int i = 0; i < N; ++i) es.psi[i] = phi[i] * invNorm;
+        results.push_back(std::move(es));
+    }
+    return results;
+}
+
+void Simulation::apply_eigenstate(const EigenState& state) {
+    if (static_cast<int>(state.psi.size()) != Nx * Ny) return;
+    psi = state.psi;
+    packets.clear();
+    running = false;
 }
 
 } // namespace sim

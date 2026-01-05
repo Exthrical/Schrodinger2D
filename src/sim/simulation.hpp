@@ -11,6 +11,11 @@ namespace sim {
 
 enum class ViewMode { MagnitudePhase, Real, Imag, Magnitude, Phase };
 
+struct EigenState {
+    double energy{0.0};
+    std::vector<std::complex<double>> psi;
+};
+
 struct Simulation {
     int Nx{372}, Ny{300};
     double Lx{1.0}, Ly{1.0};      // physical domain size (arbitrary units)
@@ -44,6 +49,10 @@ struct Simulation {
     // Diagnostics
     double mass() const;        // discrete L2 norm integral sum |psi|^2 dx dy
     void mass_split(double& left, double& right) const; // split by vertical midline
+
+    // Eigenmodes of the current Hamiltonian (real part of V, Dirichlet boundary)
+    std::vector<EigenState> compute_eigenstates(int modes, int maxBasis = 64, int maxIter = 200, double tol = 1e-6) const;
+    void apply_eigenstate(const EigenState& state);
 
     // Helpers
     inline int idx(int i, int j) const { return j * Nx + i; }
