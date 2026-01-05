@@ -1003,60 +1003,6 @@ static void draw_settings(AppState& app) {
         }
     }
 
-    if (ImGui::CollapsingHeader("Eigenstates")) {
-        ImGui::TextDisabled("Solves lowest modes of H = -(1/2)∇² + Re(V)");
-        const int maxBasisAllowed = std::max(1, 2*std::max(app.sim.Nx, app.sim.Ny));
-        if (app.eigen.basis <= 0) app.eigen.basis = maxBasisAllowed;
-        if (app.eigen.maxIter <= 0) app.eigen.maxIter = maxBasisAllowed;
-        int modes = app.eigen.modes;
-        if (ImGui::InputInt("Modes", &modes)) {
-            app.eigen.modes = std::clamp(modes, 1, std::min(32, maxBasisAllowed));
-        }
-        int basis = app.eigen.basis;
-        if (ImGui::InputInt("Krylov size", &basis)) {
-            app.eigen.basis = std::clamp(basis, app.eigen.modes, maxBasisAllowed);
-        }
-        int maxIter = app.eigen.maxIter;
-        if (ImGui::InputInt("Max iters", &maxIter)) {
-            app.eigen.maxIter = std::clamp(maxIter, app.eigen.basis, maxBasisAllowed);
-        }
-        double tol = app.eigen.tol;
-        if (ImGui::InputDouble("Tolerance", &tol, 0.0, 0.0, "%.2e")) {
-            app.eigen.tol = std::max(1e-12, tol);
-        }
-        if (ImGui::Button("Solve eigenmodes")) {
-            app.eigen.status = "Solving...";
-            ImGui::SetItemDefaultFocus();
-            app.eigen.states = app.sim.compute_eigenstates(app.eigen.modes, app.eigen.basis, app.eigen.maxIter, app.eigen.tol);
-            app.eigen.selected = app.eigen.states.empty() ? -1 : 0;
-            app.eigen.status = app.eigen.states.empty() ? "No modes found" : "Solved";
-        }
-        if (!app.eigen.status.empty()) {
-            ImGui::TextDisabled("%s", app.eigen.status.c_str());
-        }
-        if (!app.eigen.states.empty()) {
-            ImGui::Separator();
-            ImGui::Text("Modes:");
-            for (int i = 0; i < static_cast<int>(app.eigen.states.size()); ++i) {
-                ImGui::PushID(i);
-                bool selected = (app.eigen.selected == i);
-                double e = app.eigen.states[i].energy;
-                if (ImGui::Selectable("##eig", selected, ImGuiSelectableFlags_AllowDoubleClick)) {
-                    app.eigen.selected = i;
-                    if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
-                        app.sim.apply_eigenstate(app.eigen.states[i]);
-                    }
-                }
-                ImGui::SameLine();
-                ImGui::Text("E = %.6f", e);
-                if (ImGui::Button("Load")) {
-                    app.sim.apply_eigenstate(app.eigen.states[i]);
-                    app.eigen.selected = i;
-                }
-                ImGui::PopID();
-            }
-        }
-    }
 }
 
 static void draw_tools_panel(AppState& app) {
@@ -1137,6 +1083,64 @@ static void draw_tools_panel(AppState& app) {
         ImGui::EndTable();
     }
     ImGui::PopStyleVar(2);
+
+    ImGui::Separator();
+    if (ImGui::CollapsingHeader("Eigenstates"), ImGuiTreeNodeFlags_DefaultOpen) {
+        ImGui::BeginDisabled();
+        ImGui::TextWrapped("Solves lowest modes of H = -(1/2)∇² + Re(V)");
+        ImGui::EndDisabled();
+        const int maxBasisAllowed = std::max(1, 2*std::max(app.sim.Nx, app.sim.Ny));
+        if (app.eigen.basis <= 0) app.eigen.basis = maxBasisAllowed;
+        if (app.eigen.maxIter <= 0) app.eigen.maxIter = maxBasisAllowed;
+        int modes = app.eigen.modes;
+        if (ImGui::InputInt("Modes", &modes)) {
+            app.eigen.modes = std::clamp(modes, 1, std::min(32, maxBasisAllowed));
+        }
+        int basis = app.eigen.basis;
+        if (ImGui::InputInt("Krylov size", &basis)) {
+            app.eigen.basis = std::clamp(basis, app.eigen.modes, maxBasisAllowed);
+        }
+        int maxIter = app.eigen.maxIter;
+        if (ImGui::InputInt("Max iters", &maxIter)) {
+            app.eigen.maxIter = std::clamp(maxIter, app.eigen.basis, maxBasisAllowed);
+        }
+        double tol = app.eigen.tol;
+        if (ImGui::InputDouble("Tolerance", &tol, 0.0, 0.0, "%.2e")) {
+            app.eigen.tol = std::max(1e-12, tol);
+        }
+        if (ImGui::Button("Solve eigenmodes")) {
+            app.eigen.status = "Solving...";
+            ImGui::SetItemDefaultFocus();
+            app.eigen.states = app.sim.compute_eigenstates(app.eigen.modes, app.eigen.basis, app.eigen.maxIter, app.eigen.tol);
+            app.eigen.selected = app.eigen.states.empty() ? -1 : 0;
+            app.eigen.status = app.eigen.states.empty() ? "No modes found" : "Solved";
+        }
+        if (!app.eigen.status.empty()) {
+            ImGui::TextDisabled("%s", app.eigen.status.c_str());
+        }
+        if (!app.eigen.states.empty()) {
+            ImGui::Separator();
+            ImGui::Text("Modes:");
+            for (int i = 0; i < static_cast<int>(app.eigen.states.size()); ++i) {
+                ImGui::PushID(i);
+                bool selected = (app.eigen.selected == i);
+                double e = app.eigen.states[i].energy;
+                if (ImGui::Selectable("##eig", selected, ImGuiSelectableFlags_AllowDoubleClick)) {
+                    app.eigen.selected = i;
+                    if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
+                        app.sim.apply_eigenstate(app.eigen.states[i]);
+                    }
+                }
+                ImGui::SameLine();
+                ImGui::Text("E = %.6f", e);
+                if (ImGui::Button("Load")) {
+                    app.sim.apply_eigenstate(app.eigen.states[i]);
+                    app.eigen.selected = i;
+                }
+                ImGui::PopID();
+            }
+        }
+    }
 }
 
 static void draw_view_content(AppState& app) {
