@@ -944,7 +944,7 @@ static void draw_settings(AppState& app) {
         }
     }
 
-    if (ImGui::CollapsingHeader("Potential Field")) {
+    if (ImGui::CollapsingHeader("Potential Field", ImGuiTreeNodeFlags_DefaultOpen)) {
         double vmin = 0.0, vmax = 5.0;
         bool changed = ImGui::SliderScalar("CAP strength", ImGuiDataType_Double, &app.sim.pfield.cap_strength, &vmin, &vmax, "%.2f");
         vmin = 0.02; vmax = 0.25;
@@ -972,7 +972,7 @@ static void draw_settings(AppState& app) {
         }
     }
 
-    if (ImGui::CollapsingHeader("Simulation Content")) {
+    if (ImGui::CollapsingHeader("Simulation Content", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::Text("%d packet(s)", static_cast<int>(app.sim.packets.size()));
         if (ImGui::Button("Clear packets")) {
             app.sim.packets.clear();
