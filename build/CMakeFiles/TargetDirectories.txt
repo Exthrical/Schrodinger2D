@@ -1,4 +1,0 @@
-C:/Users/deera/Codex/Schrodinger2D/build/CMakeFiles/Schrodinger2D.dir
-C:/Users/deera/Codex/Schrodinger2D/build/CMakeFiles/INSTALL.dir
-C:/Users/deera/Codex/Schrodinger2D/build/CMakeFiles/ALL_BUILD.dir
-C:/Users/deera/Codex/Schrodinger2D/build/CMakeFiles/ZERO_CHECK.dir

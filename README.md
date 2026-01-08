@@ -71,5 +71,5 @@ Troubleshooting
 - On Windows, ensure you link against the toolchain’s GLFW (vcpkg is straightforward). OpenGL2 backend avoids needing a GL loader.
 
 License
+- Licensed under the Apache License, Version 2.0. See `LICENSE`.
 - No license headers are added. Dear ImGui is included in `third_party/` under its own license.
-

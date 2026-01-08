@@ -1089,20 +1089,21 @@ static void draw_tools_panel(AppState& app) {
         ImGui::BeginDisabled();
         ImGui::TextWrapped("Solves lowest modes of H = -(1/2)∇² + Re(V)");
         ImGui::EndDisabled();
-        const int maxBasisAllowed = std::max(1, 2*std::max(app.sim.Nx, app.sim.Ny));
-        if (app.eigen.basis <= 0) app.eigen.basis = maxBasisAllowed;
-        if (app.eigen.maxIter <= 0) app.eigen.maxIter = maxBasisAllowed;
+        const int maxBasisAllowed = std::max(1, app.sim.Nx*app.sim.Ny); // full limit
+        const int defaultBasis = std::max(1, 2*std::max(app.sim.Nx, app.sim.Ny)); // reasonable default
+        if (app.eigen.basis <= 0) app.eigen.basis = defaultBasis;
+        if (app.eigen.maxIter <= 0) app.eigen.maxIter = 1000;
         int modes = app.eigen.modes;
         if (ImGui::InputInt("Modes", &modes)) {
-            app.eigen.modes = std::clamp(modes, 1, std::min(32, maxBasisAllowed));
+            app.eigen.modes = std::clamp(modes, 1, std::min(32, defaultBasis));
         }
         int basis = app.eigen.basis;
         if (ImGui::InputInt("Krylov size", &basis)) {
-            app.eigen.basis = std::clamp(basis, app.eigen.modes, maxBasisAllowed);
+            app.eigen.basis = std::clamp(basis, app.eigen.modes, maxBasisAllowed); // full limit
         }
         int maxIter = app.eigen.maxIter;
         if (ImGui::InputInt("Max iters", &maxIter)) {
-            app.eigen.maxIter = std::clamp(maxIter, app.eigen.basis, maxBasisAllowed);
+            app.eigen.maxIter = std::clamp(maxIter, app.eigen.basis, 4000*modes); // Arbitrary upper limit
         }
         double tol = app.eigen.tol;
         if (ImGui::InputDouble("Tolerance", &tol, 0.0, 0.0, "%.2e")) {
@@ -1132,10 +1133,11 @@ static void draw_tools_panel(AppState& app) {
                     }
                 }
                 ImGui::SameLine();
-                ImGui::Text("E = %.6f", e);
+                ImGui::Text("E%d = %.6f", i, e);
                 if (ImGui::Button("Load")) {
                     app.sim.apply_eigenstate(app.eigen.states[i]);
                     app.eigen.selected = i;
+                    push_toast(app, "Eigenstate loaded", 2.5f);
                 }
                 ImGui::PopID();
             }
