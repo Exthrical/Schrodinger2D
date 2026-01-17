@@ -25,6 +25,8 @@
 #include <iomanip>
 #include <ctime>
 #include <system_error>
+#include <fstream>
+
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb/stb_image_write.h"
@@ -129,15 +131,20 @@ struct AppState {
     int windowDragStartX{0};
     int windowDragStartY{0};
 
-    struct EigenPanelState {
-        int modes{3};
-        int basis{0};
-        int maxIter{0};
-        double tol{1e-6};
-        int selected{-1};
-        std::string status;
-        std::vector<sim::EigenState> states;
-    } eigen;
+     struct EigenPanelState {
+         int modes{3};
+         int basis{0};
+         int maxIter{0};
+         double tol{1e-6};
+         int selected{-1};
+         std::string status;
+         std::vector<sim::EigenState> states;
+     } eigen;
+
+     // Scene IO
+     std::filesystem::path sceneLastSaveDir;
+     std::filesystem::path sceneLastLoadDir;
+
 
     // GL texture for field visualization
     GLuint tex{0};
@@ -812,23 +819,133 @@ static std::filesystem::path default_screenshot_path() {
     std::filesystem::create_directories(dir, ec);
 
     auto now = std::chrono::system_clock::now();
-    std::time_t tt = std::chrono::system_clock::to_time_t(now);
-    std::tm tm{};
-#if defined(_WIN32)
-    localtime_s(&tm, &tt);
+    std::time_t t = std::chrono::system_clock::to_time_t(now);
+    std::tm tm;
+#ifdef _WIN32
+    localtime_s(&tm, &t);
 #else
-    localtime_r(&tt, &tm);
+    localtime_r(&t, &tm);
 #endif
-    std::ostringstream name;
-    name << "screenshot_" << std::put_time(&tm, "%Y%m%d_%H%M%S");
-
-    std::filesystem::path candidate = dir / (name.str() + ".png");
-    int counter = 1;
-    while (std::filesystem::exists(candidate)) {
-        candidate = dir / (name.str() + "_" + std::to_string(counter++) + ".png");
-    }
-    return candidate;
+    std::ostringstream ss;
+    ss << "screenshot-" << std::put_time(&tm, "%Y-%m-%d-%H%M%S") << ".png";
+    return dir / ss.str();
 }
+
+static std::filesystem::path exe_dir_path() {
+#ifdef _WIN32
+    wchar_t buf[MAX_PATH];
+    DWORD len = GetModuleFileNameW(nullptr, buf, MAX_PATH);
+    if (len == 0 || len >= MAX_PATH) return std::filesystem::current_path();
+    return std::filesystem::path(buf).parent_path();
+#else
+    return std::filesystem::current_path();
+#endif
+}
+
+static bool ensure_dir_writable(const std::filesystem::path& dir) {
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    if (ec) return false;
+    auto probe = dir / ".write_test";
+    std::ofstream f(probe.string(), std::ios::out | std::ios::trunc);
+    if (!f) return false;
+    f << "ok";
+    f.close();
+    std::filesystem::remove(probe, ec);
+    return true;
+}
+
+static std::filesystem::path default_scene_dir() {
+#ifdef _WIN32
+    std::filesystem::path exeDir = exe_dir_path();
+    std::filesystem::path candidate = exeDir / "scenes";
+    if (ensure_dir_writable(candidate)) return candidate;
+
+    wchar_t localAppData[MAX_PATH];
+    DWORD n = GetEnvironmentVariableW(L"LOCALAPPDATA", localAppData, MAX_PATH);
+    if (n > 0 && n < MAX_PATH) {
+        std::filesystem::path p(localAppData);
+        p /= "Schrodinger2D";
+        p /= "scenes";
+        ensure_dir_writable(p);
+        return p;
+    }
+
+    std::filesystem::path fallback = std::filesystem::current_path() / "scenes";
+    ensure_dir_writable(fallback);
+    return fallback;
+#else
+    std::filesystem::path p = std::filesystem::current_path() / "scenes";
+    ensure_dir_writable(p);
+    return p;
+#endif
+}
+
+#ifdef _WIN32
+static std::wstring widen_utf8(const std::string& s) {
+    if (s.empty()) return std::wstring();
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, nullptr, 0);
+    if (wlen <= 0) return std::wstring();
+    std::wstring w;
+    w.resize((size_t)wlen - 1);
+    MultiByteToWideChar(CP_UTF8, 0, s.c_str(), -1, w.data(), wlen);
+    return w;
+}
+
+static std::string narrow_utf8(const std::wstring& w) {
+    if (w.empty()) return std::string();
+    int len = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
+    if (len <= 0) return std::string();
+    std::string s;
+    s.resize((size_t)len - 1);
+    WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, s.data(), len, nullptr, nullptr);
+    return s;
+}
+
+static std::string open_json_file_dialog(const std::filesystem::path& initialDir) {
+    wchar_t fileBuf[MAX_PATH] = {0};
+    OPENFILENAMEW ofn;
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = nullptr;
+    ofn.lpstrFile = fileBuf;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrFilter = L"JSON Files\0*.json\0All Files\0*.*\0";
+    ofn.nFilterIndex = 1;
+    std::wstring init = initialDir.wstring();
+    ofn.lpstrInitialDir = init.empty() ? nullptr : init.c_str();
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_FILEMUSTEXIST | OFN_EXPLORER;
+    if (GetOpenFileNameW(&ofn)) {
+        return narrow_utf8(fileBuf);
+    }
+    return std::string();
+}
+
+static std::string save_json_file_dialog(const std::filesystem::path& initialDir, const std::string& defaultName) {
+    wchar_t fileBuf[MAX_PATH] = {0};
+    std::wstring def = widen_utf8(defaultName);
+    if (!def.empty()) {
+        wcsncpy_s(fileBuf, def.c_str(), _TRUNCATE);
+    }
+
+    OPENFILENAMEW ofn;
+    ZeroMemory(&ofn, sizeof(ofn));
+    ofn.lStructSize = sizeof(ofn);
+    ofn.hwndOwner = nullptr;
+    ofn.lpstrFile = fileBuf;
+    ofn.nMaxFile = MAX_PATH;
+    ofn.lpstrFilter = L"JSON Files\0*.json\0All Files\0*.*\0";
+    ofn.nFilterIndex = 1;
+    std::wstring init = initialDir.wstring();
+    ofn.lpstrInitialDir = init.empty() ? nullptr : init.c_str();
+    ofn.Flags = OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_EXPLORER;
+    ofn.lpstrDefExt = L"json";
+    if (GetSaveFileNameW(&ofn)) {
+        return narrow_utf8(fileBuf);
+    }
+    return std::string();
+}
+#endif
 
 static bool save_current_view_png(const AppState& app, const std::filesystem::path& path) {
     if (app.sim.Nx <= 0 || app.sim.Ny <= 0)
@@ -1064,9 +1181,9 @@ static void draw_settings(AppState& app) {
         if (ImGui::Button("Clear boxes")) {
             app.sim.pfield.boxes.clear();
             app.sim.reset();
-            app.selectedBox = -1;
-            app.boxEditorOpen = false;
+            selection_clear(app);
         }
+
         ImGui::SameLine();
         if (ImGui::Button("Rebuild V & Reset")) {
             app.sim.reset();
@@ -1074,9 +1191,9 @@ static void draw_settings(AppState& app) {
         if (ImGui::Button("Clear wells")) {
             app.sim.pfield.wells.clear();
             app.sim.reset();
-            app.selectedWell = -1;
-            app.wellEditorOpen = false;
+            selection_clear(app);
         }
+
     }
 
     if (ImGui::CollapsingHeader("Simulation Content", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -1084,31 +1201,58 @@ static void draw_settings(AppState& app) {
         if (ImGui::Button("Clear packets")) {
             app.sim.packets.clear();
             app.sim.reset();
-            app.selectedPacket = -1;
-            app.packetEditorOpen = false;
+            selection_clear(app);
         }
+
     }
 
     if (ImGui::CollapsingHeader("Scene IO")) {
-        static char path[256] = "examples/scene.json";
-        ImGui::InputText("Path", path, sizeof(path));
-        if (ImGui::Button("Save JSON")) {
-            io::Scene scene;
-            io::from_simulation(app.sim, scene);
-            io::save_scene(path, scene);
+        if (app.sceneLastSaveDir.empty()) app.sceneLastSaveDir = default_scene_dir();
+        if (app.sceneLastLoadDir.empty()) app.sceneLastLoadDir = default_scene_dir();
+
+        ImGui::TextDisabled("Save folder: %s", app.sceneLastSaveDir.string().c_str());
+        ImGui::TextDisabled("Load folder: %s", app.sceneLastLoadDir.string().c_str());
+
+        if (ImGui::Button("Save...")) {
+#ifdef _WIN32
+            std::string chosen = save_json_file_dialog(app.sceneLastSaveDir, "scene.json");
+            if (!chosen.empty()) {
+                std::filesystem::path p(chosen);
+                app.sceneLastSaveDir = p.parent_path();
+                io::Scene scene;
+                io::from_simulation(app.sim, scene);
+                if (io::save_scene(p.string(), scene)) {
+                    push_toast(app, std::string("Saved scene to ") + p.string(), 2.5f);
+                } else {
+                    push_toast(app, std::string("Failed to save scene to ") + p.string(), 3.0f);
+                }
+            }
+#else
+            push_toast(app, "File dialog not available on this platform", 3.0f);
+#endif
         }
         ImGui::SameLine();
-        if (ImGui::Button("Load JSON")) {
-            io::Scene scene;
-            if (io::load_scene(path, scene)) {
-                io::to_simulation(scene, app.sim);
-                app.selectedBox = -1;
-                app.selectedPacket = -1;
-                app.boxEditorOpen = false;
-                app.packetEditorOpen = false;
+        if (ImGui::Button("Load...")) {
+#ifdef _WIN32
+            std::string chosen = open_json_file_dialog(app.sceneLastLoadDir);
+            if (!chosen.empty()) {
+                std::filesystem::path p(chosen);
+                app.sceneLastLoadDir = p.parent_path();
+                io::Scene scene;
+                if (io::load_scene(p.string(), scene)) {
+                    io::to_simulation(scene, app.sim);
+                    selection_clear(app);
+                    push_toast(app, std::string("Loaded scene from ") + p.string(), 2.5f);
+                } else {
+                    push_toast(app, std::string("Failed to load scene: ") + p.string(), 3.0f);
+                }
             }
+#else
+            push_toast(app, "File dialog not available on this platform", 3.0f);
+#endif
         }
     }
+
 
 }
 

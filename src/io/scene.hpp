@@ -9,6 +9,7 @@ namespace io {
 
 struct SceneBox { double x0,y0,x1,y1,height; };
 struct ScenePacket { double cx,cy,sigma,amplitude,kx,ky; };
+struct SceneWell { double cx,cy,strength,radius; int profile; };
 
 struct Scene {
     int Nx{128}, Ny{128};
@@ -16,6 +17,7 @@ struct Scene {
     double cap_strength{1.0};
     double cap_ratio{0.1};
     std::vector<SceneBox> boxes;
+    std::vector<SceneWell> wells;
     std::vector<ScenePacket> packets;
     int steps{600}; // for smoke example
 };
