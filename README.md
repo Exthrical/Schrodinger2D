@@ -7,7 +7,7 @@ An interactive C++17 sandbox to experiment with the time‑dependent 2D Schrödi
 with real‑time visualization, Gaussian wavepacket placement, and rectangular barrier/well potentials. The default solver is an unconditionally stable Crank–Nicolson ADI (alternating‑direction implicit) scheme with a complex absorbing potential (CAP) sponge near boundaries to reduce reflections.
 
 ![Schrodinger2D simulation view](assets/screenshot-2026-01-06-010902.png)
-![Schrodinger2D scene setup](assets/screenshot-2026-01-07-204353.png)
+<video src="assets/schrod2dvideo1.mp4" controls muted playsinline width="100%"></video>
 
 Highlights
 - GUI via Dear ImGui (bundled) + GLFW + OpenGL2 backend. If GLFW/OpenGL are not found, the project builds in headless mode and can run the smoke example via `--example`.
