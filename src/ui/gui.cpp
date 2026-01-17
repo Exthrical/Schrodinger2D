@@ -39,6 +39,8 @@ static constexpr float kMomentumHandleRadiusPx = 12.0f;
 static constexpr float kMomentumUVScale = 0.004f;
 static constexpr float kWellHandleRadiusPx = 10.0f;
 static constexpr float kDragThresholdPx = 4.0f;
+static constexpr float kBoxEdgePickPx = 6.0f;
+
 
 struct AppState {
     sim::Simulation sim;
@@ -70,7 +72,9 @@ struct AppState {
     enum class Mode { Drag, AddPacket, AddBox, AddWell } mode{Mode::Drag};
     enum class DragAction {
         None,
-        MoveBox,
+        MoveSelection,
+        AdjustBoxEdge,
+        // Legacy single-item drag actions (kept for save compatibility; unused)
         MovePacket,
         AdjustPacketMomentum,
         MoveWell,
@@ -78,20 +82,36 @@ struct AppState {
         AddPacket,
         AddWell
     };
+
     DragAction dragAction{DragAction::None};
+
+    struct SelectedItem {
+        enum class Kind { Box, Packet, Well } kind{Kind::Box};
+        int idx{-1};
+    };
+    std::vector<SelectedItem> selection;
+
     int selectedBox{-1};
     int selectedPacket{-1};
     int selectedWell{-1};
+
+    SelectedItem::Kind dragPrimaryKind{SelectedItem::Kind::Box};
+    int dragPrimaryIdx{-1};
+
     int activeDragPacket{-1};
     int activeDragWell{-1};
     bool pendingPacketClick{false};
     bool packetDragDirty{false};
+    bool selectionDragDirty{false};
     ImVec2 dragStart{0,0};
     ImVec2 dragEnd{0,0};
     double packetDragStartCx{0.0};
     double packetDragStartCy{0.0};
     double packetDragStartKx{0.0};
     double packetDragStartKy{0.0};
+
+    enum class BoxEdge { None, Left, Right, Top, Bottom } dragBoxEdge{BoxEdge::None};
+
 
     bool boxEditorOpen{false};
     bool packetEditorOpen{false};
@@ -138,6 +158,145 @@ static void take_screenshot(AppState& app);
 static inline ImVec2 operator+(ImVec2 a, ImVec2 b) { return ImVec2(a.x + b.x, a.y + b.y); }
 static inline ImVec2 operator-(ImVec2 a, ImVec2 b) { return ImVec2(a.x - b.x, a.y - b.y); }
 static inline ImVec2 operator*(ImVec2 a, float s) { return ImVec2(a.x * s, a.y * s); }
+
+static bool selection_contains(const AppState& app, AppState::SelectedItem::Kind kind, int idx) {
+    for (const auto& it : app.selection) {
+        if (it.kind == kind && it.idx == idx) return true;
+    }
+    return false;
+}
+
+static void selection_clear(AppState& app) {
+    app.selection.clear();
+    app.selectedBox = -1;
+    app.selectedPacket = -1;
+    app.selectedWell = -1;
+    app.boxEditorOpen = false;
+    app.packetEditorOpen = false;
+    app.wellEditorOpen = false;
+}
+
+static void selection_set_single(AppState& app, AppState::SelectedItem::Kind kind, int idx) {
+    selection_clear(app);
+    app.selection.push_back({kind, idx});
+    if (kind == AppState::SelectedItem::Kind::Box) {
+        app.selectedBox = idx;
+        app.boxEditorOpen = true;
+    } else if (kind == AppState::SelectedItem::Kind::Packet) {
+        app.selectedPacket = idx;
+    } else if (kind == AppState::SelectedItem::Kind::Well) {
+        app.selectedWell = idx;
+        app.wellEditorOpen = true;
+    }
+}
+
+static void selection_sync_single_editors(AppState& app, ImVec2 mousePos);
+
+static void selection_toggle(AppState& app, AppState::SelectedItem::Kind kind, int idx) {
+    for (size_t i = 0; i < app.selection.size(); ++i) {
+        if (app.selection[i].kind == kind && app.selection[i].idx == idx) {
+            app.selection.erase(app.selection.begin() + (int)i);
+            if (app.selection.size() == 1) {
+                selection_sync_single_editors(app, ImGui::GetIO().MousePos);
+            } else {
+                app.selectedBox = -1;
+                app.selectedPacket = -1;
+                app.selectedWell = -1;
+                app.boxEditorOpen = false;
+                app.packetEditorOpen = false;
+                app.wellEditorOpen = false;
+            }
+            return;
+        }
+    }
+    app.selection.push_back({kind, idx});
+    if (app.selection.size() == 1) {
+        selection_sync_single_editors(app, ImGui::GetIO().MousePos);
+    } else {
+        app.selectedBox = -1;
+        app.selectedPacket = -1;
+        app.selectedWell = -1;
+        app.boxEditorOpen = false;
+        app.packetEditorOpen = false;
+        app.wellEditorOpen = false;
+    }
+}
+
+static void selection_add(AppState& app, AppState::SelectedItem::Kind kind, int idx) {
+    if (!selection_contains(app, kind, idx)) {
+        app.selection.push_back({kind, idx});
+    }
+    if (app.selection.size() == 1) {
+        selection_sync_single_editors(app, ImGui::GetIO().MousePos);
+    } else {
+        app.selectedBox = -1;
+        app.selectedPacket = -1;
+        app.selectedWell = -1;
+        app.boxEditorOpen = false;
+        app.packetEditorOpen = false;
+        app.wellEditorOpen = false;
+    }
+}
+
+static void selection_sync_single_editors(AppState& app, ImVec2 mousePos) {
+    if (app.selection.size() != 1) return;
+
+    app.selectedBox = -1;
+    app.selectedPacket = -1;
+    app.selectedWell = -1;
+    app.boxEditorOpen = false;
+    app.packetEditorOpen = false;
+    app.wellEditorOpen = false;
+
+    const auto it = app.selection[0];
+    if (it.kind == AppState::SelectedItem::Kind::Box) {
+        app.selectedBox = it.idx;
+        app.boxEditorOpen = true;
+        app.boxEditorPos = mousePos + ImVec2(16, 16);
+    } else if (it.kind == AppState::SelectedItem::Kind::Packet) {
+        app.selectedPacket = it.idx;
+        app.packetEditorOpen = true;
+        app.packetEditorPos = mousePos + ImVec2(16, 16);
+    } else if (it.kind == AppState::SelectedItem::Kind::Well) {
+        app.selectedWell = it.idx;
+        app.wellEditorOpen = true;
+        app.wellEditorPos = mousePos + ImVec2(16, 16);
+    }
+}
+
+static void box_apply_edge_drag(sim::Box& b, AppState::BoxEdge& edge, float deltaUVx, float deltaUVy) {
+    double x0 = b.x0, x1 = b.x1, y0 = b.y0, y1 = b.y1;
+    if (edge == AppState::BoxEdge::Left) {
+        x0 += deltaUVx;
+        if (x0 > x1) {
+            std::swap(x0, x1);
+            edge = AppState::BoxEdge::Right;
+        }
+    } else if (edge == AppState::BoxEdge::Right) {
+        x1 += deltaUVx;
+        if (x0 > x1) {
+            std::swap(x0, x1);
+            edge = AppState::BoxEdge::Left;
+        }
+    } else if (edge == AppState::BoxEdge::Top) {
+        y0 += deltaUVy;
+        if (y0 > y1) {
+            std::swap(y0, y1);
+            edge = AppState::BoxEdge::Bottom;
+        }
+    } else if (edge == AppState::BoxEdge::Bottom) {
+        y1 += deltaUVy;
+        if (y0 > y1) {
+            std::swap(y0, y1);
+            edge = AppState::BoxEdge::Top;
+        }
+    }
+    b.x0 = std::clamp(x0, 0.0, 1.0);
+    b.x1 = std::clamp(x1, 0.0, 1.0);
+    b.y0 = std::clamp(y0, 0.0, 1.0);
+    b.y1 = std::clamp(y1, 0.0, 1.0);
+}
+
 
 // Custom theme preset helper, mirroring ImGui::StyleColors* API.
 // Applies a dark dashboard-like theme to the current context or the provided style.
@@ -342,12 +501,8 @@ static void load_default_twowall_scene(AppState& app) {
     app.sim.pfield.boxes.clear();
     app.sim.pfield.wells.clear();
     app.sim.packets.clear();
-    app.selectedBox = -1;
-    app.selectedPacket = -1;
-    app.selectedWell = -1;
-    app.boxEditorOpen = false;
-    app.packetEditorOpen = false;
-    app.wellEditorOpen = false;
+    selection_clear(app);
+
 
     app.sim.pfield.boxes.push_back(sim::Box{0.48, 0.0, 0.52, 1.0, 2400.0});
     app.sim.pfield.build(app.sim.V);
@@ -364,12 +519,8 @@ static void load_default_doubleslit_scene(AppState& app) {
     app.sim.pfield.boxes.clear();
     app.sim.pfield.wells.clear();
     app.sim.packets.clear();
-    app.selectedBox = -1;
-    app.selectedPacket = -1;
-    app.selectedWell = -1;
-    app.boxEditorOpen = false;
-    app.packetEditorOpen = false;
-    app.wellEditorOpen = false;
+    selection_clear(app);
+
 
     app.sim.pfield.boxes.push_back(sim::Box{0.48, 0.0, 0.52, 0.4, 2400.0});
     app.sim.pfield.boxes.push_back(sim::Box{0.48, 0.6, 0.52, 1.0, 2400.0});
@@ -387,12 +538,8 @@ static void load_default_doubleslit2_scene(AppState& app) {
     app.sim.pfield.wells.clear();
     app.sim.packets.clear();
     app.sim.dt = 0.000010;
-    app.selectedBox = -1;
-    app.selectedPacket = -1;
-    app.selectedWell = -1;
-    app.boxEditorOpen = false;
-    app.packetEditorOpen = false;
-    app.wellEditorOpen = false;
+    selection_clear(app);
+
 
     app.sim.pfield.boxes.push_back(sim::Box{0.48, 0.0, 0.52, 0.4, 100000.0});
     app.sim.pfield.boxes.push_back(sim::Box{0.48, 0.6, 0.52, 1.0, 100000.0});
@@ -409,12 +556,8 @@ static void load_counterpropagating_scene(AppState& app) {
     app.sim.pfield.boxes.clear();
     app.sim.pfield.wells.clear();
     app.sim.packets.clear();
-    app.selectedBox = -1;
-    app.selectedPacket = -1;
-    app.selectedWell = -1;
-    app.boxEditorOpen = false;
-    app.packetEditorOpen = false;
-    app.wellEditorOpen = false;
+    selection_clear(app);
+
 
     app.sim.pfield.build(app.sim.V);
 
@@ -432,12 +575,8 @@ static void load_waveguide_scene(AppState& app) {
     app.sim.pfield.boxes.clear();
     app.sim.pfield.wells.clear();
     app.sim.packets.clear();
-    app.selectedBox = -1;
-    app.selectedPacket = -1;
-    app.selectedWell = -1;
-    app.boxEditorOpen = false;
-    app.packetEditorOpen = false;
-    app.wellEditorOpen = false;
+    selection_clear(app);
+
 
     // Build a narrow S-shaped waveguide using axis-aligned barriers.
     app.sim.pfield.boxes.push_back(sim::Box{0.0, 0.0, 1.0, 0.08, 2200.0});
@@ -456,12 +595,8 @@ static void load_trap_scene(AppState& app) {
     app.sim.pfield.boxes.clear();
     app.sim.pfield.wells.clear();
     app.sim.packets.clear();
-    app.selectedBox = -1;
-    app.selectedPacket = -1;
-    app.selectedWell = -1;
-    app.boxEditorOpen = false;
-    app.packetEditorOpen = false;
-    app.wellEditorOpen = false;
+    selection_clear(app);
+
 
     // Create a square trap with a central obstacle to seed orbiting dynamics.
     app.sim.pfield.boxes.push_back(sim::Box{0.1, 0.1, 0.9, 0.12, 3400.0});
@@ -487,12 +622,8 @@ static void load_central_well_scene(AppState& app) {
     app.sim.pfield.wells.clear();
     app.sim.packets.clear();
     app.sim.dt = 0.000025;
-    app.selectedBox = -1;
-    app.selectedPacket = -1;
-    app.selectedWell = -1;
-    app.boxEditorOpen = false;
-    app.packetEditorOpen = false;
-    app.wellEditorOpen = false;
+    selection_clear(app);
+
 
     sim::RadialWell well;
     well.cx = 0.5; well.cy = 0.5;
@@ -515,12 +646,8 @@ static void load_central_well_2_scene(AppState& app) {
     app.sim.pfield.wells.clear();
     app.sim.packets.clear();
     app.sim.dt = 0.000025;
-    app.selectedBox = -1;
-    app.selectedPacket = -1;
-    app.selectedWell = -1;
-    app.boxEditorOpen = false;
-    app.packetEditorOpen = false;
-    app.wellEditorOpen = false;
+    selection_clear(app);
+
 
     sim::RadialWell well;
     well.cx = 0.5; well.cy = 0.5;
@@ -541,12 +668,8 @@ static void load_central_well_3_scene(AppState& app) {
     app.sim.pfield.wells.clear();
     app.sim.packets.clear();
     app.sim.dt = 0.000025;
-    app.selectedBox = -1;
-    app.selectedPacket = -1;
-    app.selectedWell = -1;
-    app.boxEditorOpen = false;
-    app.packetEditorOpen = false;
-    app.wellEditorOpen = false;
+    selection_clear(app);
+
 
     sim::RadialWell well;
     well.cx = 0.5; well.cy = 0.5;
@@ -567,12 +690,8 @@ static void load_well_lattice_scene(AppState& app) {
     app.sim.pfield.wells.clear();
     app.sim.packets.clear();
     app.sim.dt = 0.00002;
-    app.selectedBox = -1;
-    app.selectedPacket = -1;
-    app.selectedWell = -1;
-    app.boxEditorOpen = false;
-    app.packetEditorOpen = false;
-    app.wellEditorOpen = false;
+    selection_clear(app);
+
 
     const int cols = 5;
     const int rows = 4;
@@ -607,12 +726,8 @@ static void load_ring_resonator_scene(AppState& app) {
     app.sim.pfield.wells.clear();
     app.sim.packets.clear();
     app.sim.dt = 0.00002;
-    app.selectedBox = -1;
-    app.selectedPacket = -1;
-    app.selectedWell = -1;
-    app.boxEditorOpen = false;
-    app.packetEditorOpen = false;
-    app.wellEditorOpen = false;
+    selection_clear(app);
+
 
     const int segments = 12;
     const double tau = 6.28318530717958647692;
@@ -651,12 +766,8 @@ static void load_barrier_gauntlet_scene(AppState& app) {
     app.sim.pfield.wells.clear();
     app.sim.packets.clear();
     app.sim.dt = 0.00002;
-    app.selectedBox = -1;
-    app.selectedPacket = -1;
-    app.selectedWell = -1;
-    app.boxEditorOpen = false;
-    app.packetEditorOpen = false;
-    app.wellEditorOpen = false;
+    selection_clear(app);
+
 
     app.sim.pfield.boxes.push_back(sim::Box{0.12, 0.1, 0.88, 0.18, 3400.0});
     app.sim.pfield.boxes.push_back(sim::Box{0.12, 0.82, 0.88, 0.9, 3400.0});
@@ -887,13 +998,9 @@ static void draw_settings(AppState& app) {
 
     if (nx != app.sim.Nx || ny != app.sim.Ny) {
         app.sim.resize(nx, ny);
-        app.selectedBox = -1;
-        app.selectedPacket = -1;
-        app.selectedWell = -1;
-        app.boxEditorOpen = false;
-        app.packetEditorOpen = false;
-        app.wellEditorOpen = false;
+        selection_clear(app);
     }
+
     double mass = app.sim.mass();
     double left = 0.0, right = 0.0;
     app.sim.mass_split(left, right);
@@ -1163,18 +1270,74 @@ static void draw_view_content(AppState& app) {
     ImVec2 tl = cur;
     ImVec2 br = cur + target;
 
+    ImGuiIO& io = ImGui::GetIO();
+    bool hovered = ImGui::IsItemHovered();
+
+    // Hover edge detection for visuals (independent of click handling)
+    int hoveredBoxEdgeIdx = -1;
+    AppState::BoxEdge hoveredBoxEdge = AppState::BoxEdge::None;
+    float hoveredBoxEdgeBest = kBoxEdgePickPx;
+    if (hovered && app.mode == AppState::Mode::Drag) {
+        for (int bi = (int)app.sim.pfield.boxes.size() - 1; bi >= 0; --bi) {
+            const auto& b = app.sim.pfield.boxes[bi];
+            ImVec2 p0 = uv_to_screen(ImVec2((float)b.x0, (float)b.y0), tl, br);
+            ImVec2 p1 = uv_to_screen(ImVec2((float)b.x1, (float)b.y1), tl, br);
+            ImVec2 top_left(std::min(p0.x, p1.x), std::min(p0.y, p1.y));
+            ImVec2 bottom_right(std::max(p0.x, p1.x), std::max(p0.y, p1.y));
+
+            const bool inside = (io.MousePos.x >= top_left.x && io.MousePos.x <= bottom_right.x &&
+                                 io.MousePos.y >= top_left.y && io.MousePos.y <= bottom_right.y);
+            if (!inside) continue;
+
+            float dxL = std::fabs(io.MousePos.x - top_left.x);
+            float dxR = std::fabs(io.MousePos.x - bottom_right.x);
+            float dyT = std::fabs(io.MousePos.y - top_left.y);
+            float dyB = std::fabs(io.MousePos.y - bottom_right.y);
+
+            float best = hoveredBoxEdgeBest;
+            AppState::BoxEdge bestEdge = AppState::BoxEdge::None;
+            if (dxL <= best) { best = dxL; bestEdge = AppState::BoxEdge::Left; }
+            if (dxR <= best) { best = dxR; bestEdge = AppState::BoxEdge::Right; }
+            if (dyT <= best) { best = dyT; bestEdge = AppState::BoxEdge::Top; }
+            if (dyB <= best) { best = dyB; bestEdge = AppState::BoxEdge::Bottom; }
+
+            if (bestEdge != AppState::BoxEdge::None) {
+                hoveredBoxEdgeBest = best;
+                hoveredBoxEdge = bestEdge;
+                hoveredBoxEdgeIdx = bi;
+                break;
+            }
+        }
+    }
+
     for (size_t bi = 0; bi < app.sim.pfield.boxes.size(); ++bi) {
         const auto& b = app.sim.pfield.boxes[bi];
         ImVec2 p0 = uv_to_screen(ImVec2((float)b.x0, (float)b.y0), tl, br);
         ImVec2 p1 = uv_to_screen(ImVec2((float)b.x1, (float)b.y1), tl, br);
         ImVec2 top_left(std::min(p0.x, p1.x), std::min(p0.y, p1.y));
         ImVec2 bottom_right(std::max(p0.x, p1.x), std::max(p0.y, p1.y));
-        bool selected = (static_cast<int>(bi) == app.selectedBox);
+
+        bool selected = selection_contains(app, AppState::SelectedItem::Kind::Box, (int)bi);
         ImU32 col = selected ? make_rgba(1.0f, 0.9f, 0.1f, 0.95f)
                              : make_rgba(1.0f, 0.4f, 0.1f, 0.7f);
         float thickness = selected ? 3.0f : 1.5f;
         dl->AddRect(top_left, bottom_right, col, 0.0f, 0, thickness);
+
+        if ((int)bi == hoveredBoxEdgeIdx && hoveredBoxEdge != AppState::BoxEdge::None) {
+            ImU32 edgeCol = make_rgba(1.0f, 0.8f, 0.2f, 0.95f);
+            float edgeThick = 3.5f;
+            if (hoveredBoxEdge == AppState::BoxEdge::Left) {
+                dl->AddLine(ImVec2(top_left.x, top_left.y), ImVec2(top_left.x, bottom_right.y), edgeCol, edgeThick);
+            } else if (hoveredBoxEdge == AppState::BoxEdge::Right) {
+                dl->AddLine(ImVec2(bottom_right.x, top_left.y), ImVec2(bottom_right.x, bottom_right.y), edgeCol, edgeThick);
+            } else if (hoveredBoxEdge == AppState::BoxEdge::Top) {
+                dl->AddLine(ImVec2(top_left.x, top_left.y), ImVec2(bottom_right.x, top_left.y), edgeCol, edgeThick);
+            } else if (hoveredBoxEdge == AppState::BoxEdge::Bottom) {
+                dl->AddLine(ImVec2(top_left.x, bottom_right.y), ImVec2(bottom_right.x, bottom_right.y), edgeCol, edgeThick);
+            }
+        }
     }
+
 
     struct WellVisual {
         int idx;
@@ -1221,9 +1384,8 @@ static void draw_view_content(AppState& app) {
         packetVis.push_back(pv);
     }
 
-    ImGuiIO& io = ImGui::GetIO();
-    bool hovered = ImGui::IsItemHovered();
     int hoveredMomentumIdx = -1;
+
     int hoveredPacketIdx = -1;
     int hoveredWellIdx = -1;
     if (hovered) {
@@ -1258,7 +1420,8 @@ static void draw_view_content(AppState& app) {
     }
 
     for (const auto& wv : wellVis) {
-        bool selected = (app.selectedWell == wv.idx);
+            bool selected = selection_contains(app, AppState::SelectedItem::Kind::Well, wv.idx);
+
         bool centerHover = (hoveredWellIdx == wv.idx && app.mode == AppState::Mode::Drag);
         const auto& well = *wv.well;
         bool attractive = well.strength < 0.0;
@@ -1280,7 +1443,8 @@ static void draw_view_content(AppState& app) {
     }
 
     for (const auto& pv : packetVis) {
-        bool selected = (app.selectedPacket == pv.idx);
+        bool selected = selection_contains(app, AppState::SelectedItem::Kind::Packet, pv.idx);
+
         bool centerHover = (hoveredPacketIdx == pv.idx && app.mode == AppState::Mode::Drag);
         bool momentumHover = (hoveredMomentumIdx == pv.idx && app.mode == AppState::Mode::Drag);
 
@@ -1323,44 +1487,101 @@ static void draw_view_content(AppState& app) {
         app.activeDragWell = -1;
         app.pendingPacketClick = false;
         app.packetDragDirty = false;
+        app.selectionDragDirty = false;
+        app.dragBoxEdge = AppState::BoxEdge::None;
+        app.dragPrimaryIdx = -1;
+
+        const bool shift = io.KeyShift;
+
+        // Edge hit test (topmost box wins)
+        int edgeBoxIdx = -1;
+        AppState::BoxEdge edgeHit = AppState::BoxEdge::None;
+        float edgeBest = kBoxEdgePickPx;
+        for (int bi = (int)app.sim.pfield.boxes.size() - 1; bi >= 0; --bi) {
+            const auto& b = app.sim.pfield.boxes[bi];
+            ImVec2 p0 = uv_to_screen(ImVec2((float)b.x0, (float)b.y0), tl, br);
+            ImVec2 p1 = uv_to_screen(ImVec2((float)b.x1, (float)b.y1), tl, br);
+            ImVec2 top_left(std::min(p0.x, p1.x), std::min(p0.y, p1.y));
+            ImVec2 bottom_right(std::max(p0.x, p1.x), std::max(p0.y, p1.y));
+
+            const bool inside = (io.MousePos.x >= top_left.x && io.MousePos.x <= bottom_right.x &&
+                                 io.MousePos.y >= top_left.y && io.MousePos.y <= bottom_right.y);
+            if (!inside) continue;
+
+            float dxL = std::fabs(io.MousePos.x - top_left.x);
+            float dxR = std::fabs(io.MousePos.x - bottom_right.x);
+            float dyT = std::fabs(io.MousePos.y - top_left.y);
+            float dyB = std::fabs(io.MousePos.y - bottom_right.y);
+
+            float best = edgeBest;
+            AppState::BoxEdge bestEdge = AppState::BoxEdge::None;
+            if (dxL <= best) { best = dxL; bestEdge = AppState::BoxEdge::Left; }
+            if (dxR <= best) { best = dxR; bestEdge = AppState::BoxEdge::Right; }
+            if (dyT <= best) { best = dyT; bestEdge = AppState::BoxEdge::Top; }
+            if (dyB <= best) { best = dyB; bestEdge = AppState::BoxEdge::Bottom; }
+
+            if (bestEdge != AppState::BoxEdge::None) {
+                edgeBest = best;
+                edgeHit = bestEdge;
+                edgeBoxIdx = bi;
+                break;
+            }
+        }
+
+        if (edgeHit == AppState::BoxEdge::Left || edgeHit == AppState::BoxEdge::Right) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeEW);
+        } else if (edgeHit == AppState::BoxEdge::Top || edgeHit == AppState::BoxEdge::Bottom) {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_ResizeNS);
+        }
 
         if (app.mode == AppState::Mode::Drag) {
             if (hoveredMomentumIdx >= 0) {
-                app.selectedPacket = hoveredMomentumIdx;
-                app.selectedBox = -1;
-                app.boxEditorOpen = false;
-                app.selectedWell = -1;
-                app.wellEditorOpen = false;
+                selection_set_single(app, AppState::SelectedItem::Kind::Packet, hoveredMomentumIdx);
                 app.packetEditorOpen = false;
                 app.activeDragPacket = hoveredMomentumIdx;
                 app.dragAction = AppState::DragAction::AdjustPacketMomentum;
                 const auto& pkt = app.sim.packets[hoveredMomentumIdx];
                 app.packetDragStartKx = pkt.kx;
                 app.packetDragStartKy = pkt.ky;
+            } else if (edgeBoxIdx >= 0 && edgeHit != AppState::BoxEdge::None) {
+                // fine select an edge: breaks multi-selection
+                selection_set_single(app, AppState::SelectedItem::Kind::Box, edgeBoxIdx);
+                app.boxEditorOpen = false;
+                app.dragAction = AppState::DragAction::AdjustBoxEdge;
+                app.dragPrimaryKind = AppState::SelectedItem::Kind::Box;
+                app.dragPrimaryIdx = edgeBoxIdx;
+                app.dragBoxEdge = edgeHit;
             } else if (hoveredPacketIdx >= 0) {
-                app.selectedPacket = hoveredPacketIdx;
-                app.selectedBox = -1;
-                app.boxEditorOpen = false;
-                app.selectedWell = -1;
-                app.wellEditorOpen = false;
-                app.activeDragPacket = hoveredPacketIdx;
-                app.dragAction = AppState::DragAction::MovePacket;
-                const auto& pkt = app.sim.packets[hoveredPacketIdx];
-                app.packetDragStartCx = pkt.cx;
-                app.packetDragStartCy = pkt.cy;
-                app.packetEditorOpen = false;
-                app.pendingPacketClick = true;
+                if (shift) {
+                    selection_toggle(app, AppState::SelectedItem::Kind::Packet, hoveredPacketIdx);
+                } else {
+                    selection_set_single(app, AppState::SelectedItem::Kind::Packet, hoveredPacketIdx);
+                }
+
+                // packet click opens editor unless it turns into a drag
+                if (app.selection.size() == 1 && app.selection[0].kind == AppState::SelectedItem::Kind::Packet) {
+                    app.packetEditorOpen = false;
+                    app.pendingPacketClick = true;
+                } else {
+                    app.packetEditorOpen = false;
+                    app.pendingPacketClick = false;
+                }
+
+                app.dragAction = AppState::DragAction::MoveSelection;
+                app.dragPrimaryKind = AppState::SelectedItem::Kind::Packet;
+                app.dragPrimaryIdx = hoveredPacketIdx;
             } else if (hoveredWellIdx >= 0) {
-                app.selectedWell = hoveredWellIdx;
-                app.wellEditorOpen = true;
-                app.wellEditorPos = io.MousePos + ImVec2(16, 16);
-                app.selectedBox = -1;
-                app.boxEditorOpen = false;
-                app.selectedPacket = -1;
-                app.packetEditorOpen = false;
-                app.activeDragWell = hoveredWellIdx;
-                app.dragAction = AppState::DragAction::MoveWell;
+                if (shift) {
+                    selection_toggle(app, AppState::SelectedItem::Kind::Well, hoveredWellIdx);
+                } else {
+                    selection_set_single(app, AppState::SelectedItem::Kind::Well, hoveredWellIdx);
+                }
+                selection_sync_single_editors(app, io.MousePos);
+                app.dragAction = AppState::DragAction::MoveSelection;
+                app.dragPrimaryKind = AppState::SelectedItem::Kind::Well;
+                app.dragPrimaryIdx = hoveredWellIdx;
             } else {
+                // box body hit (topmost wins)
                 int boxHit = -1;
                 for (int bi = static_cast<int>(app.sim.pfield.boxes.size()) - 1; bi >= 0; --bi) {
                     const auto& b = app.sim.pfield.boxes[bi];
@@ -1373,22 +1594,19 @@ static void draw_view_content(AppState& app) {
                         break;
                     }
                 }
+
                 if (boxHit >= 0) {
-                    app.selectedBox = boxHit;
-                    app.boxEditorOpen = true;
-                    app.boxEditorPos = io.MousePos + ImVec2(16, 16);
-                    app.selectedPacket = -1;
-                    app.packetEditorOpen = false;
-                    app.selectedWell = -1;
-                    app.wellEditorOpen = false;
-                    app.dragAction = AppState::DragAction::MoveBox;
+                    if (shift) {
+                        selection_toggle(app, AppState::SelectedItem::Kind::Box, boxHit);
+                    } else {
+                        selection_set_single(app, AppState::SelectedItem::Kind::Box, boxHit);
+                    }
+                    selection_sync_single_editors(app, io.MousePos);
+                    app.dragAction = AppState::DragAction::MoveSelection;
+                    app.dragPrimaryKind = AppState::SelectedItem::Kind::Box;
+                    app.dragPrimaryIdx = boxHit;
                 } else {
-                    app.selectedBox = -1;
-                    app.boxEditorOpen = false;
-                    app.selectedPacket = -1;
-                    app.packetEditorOpen = false;
-                    app.selectedWell = -1;
-                    app.wellEditorOpen = false;
+                    if (!shift) selection_clear(app);
                 }
             }
         } else if (app.mode == AppState::Mode::AddBox) {
@@ -1400,43 +1618,58 @@ static void draw_view_content(AppState& app) {
         }
     }
 
+
     if (app.dragAction != AppState::DragAction::None && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
         app.dragEnd = io.MousePos;
 
-        switch (app.dragAction) {
-        case AppState::DragAction::MoveBox: {
-            if (app.selectedBox >= 0 && app.selectedBox < static_cast<int>(app.sim.pfield.boxes.size())) {
+        if (app.dragAction == AppState::DragAction::MoveSelection) {
+            ImVec2 uv0 = screen_to_uv(app.dragStart, tl, br);
+            ImVec2 uv1 = screen_to_uv(app.dragEnd, tl, br);
+            ImVec2 d = uv1 - uv0;
+
+            bool rebuildPotential = false;
+            bool packetMoved = false;
+
+            for (const auto& it : app.selection) {
+                if (it.kind == AppState::SelectedItem::Kind::Box) {
+                    if (it.idx >= 0 && it.idx < (int)app.sim.pfield.boxes.size()) {
+                        auto& b = app.sim.pfield.boxes[it.idx];
+                        b.x0 += d.x; b.x1 += d.x;
+                        b.y0 += d.y; b.y1 += d.y;
+                        rebuildPotential = true;
+                    }
+                } else if (it.kind == AppState::SelectedItem::Kind::Packet) {
+                    if (it.idx >= 0 && it.idx < (int)app.sim.packets.size()) {
+                        auto& pkt = app.sim.packets[it.idx];
+                        pkt.cx = std::clamp(pkt.cx + (double)d.x, 0.0, 1.0);
+                        pkt.cy = std::clamp(pkt.cy + (double)d.y, 0.0, 1.0);
+                        packetMoved = true;
+                    }
+                } else if (it.kind == AppState::SelectedItem::Kind::Well) {
+                    if (it.idx >= 0 && it.idx < (int)app.sim.pfield.wells.size()) {
+                        auto& w = app.sim.pfield.wells[it.idx];
+                        w.cx = std::clamp(w.cx + (double)d.x, 0.0, 1.0);
+                        w.cy = std::clamp(w.cy + (double)d.y, 0.0, 1.0);
+                        rebuildPotential = true;
+                    }
+                }
+            }
+
+            app.dragStart = app.dragEnd;
+            if (rebuildPotential) app.sim.pfield.build(app.sim.V);
+            if (packetMoved) app.selectionDragDirty = true;
+        } else if (app.dragAction == AppState::DragAction::AdjustBoxEdge) {
+            if (app.dragPrimaryIdx >= 0 && app.dragPrimaryIdx < (int)app.sim.pfield.boxes.size()) {
                 ImVec2 uv0 = screen_to_uv(app.dragStart, tl, br);
                 ImVec2 uv1 = screen_to_uv(app.dragEnd, tl, br);
                 ImVec2 d = uv1 - uv0;
-                auto& b = app.sim.pfield.boxes[app.selectedBox];
-                b.x0 += d.x; b.x1 += d.x;
-                b.y0 += d.y; b.y1 += d.y;
+
+                auto& b = app.sim.pfield.boxes[app.dragPrimaryIdx];
+                box_apply_edge_drag(b, app.dragBoxEdge, d.x, d.y);
                 app.dragStart = app.dragEnd;
                 app.sim.pfield.build(app.sim.V);
             }
-            break;
-        }
-        case AppState::DragAction::MovePacket: {
-            if (app.activeDragPacket >= 0 && app.activeDragPacket < static_cast<int>(app.sim.packets.size())) {
-                float dx = io.MousePos.x - app.dragStart.x;
-                float dy = io.MousePos.y - app.dragStart.y;
-                if (app.pendingPacketClick) {
-                    if ((dx * dx + dy * dy) >= kDragThresholdPx * kDragThresholdPx) {
-                        app.pendingPacketClick = false;
-                    }
-                }
-                if (!app.pendingPacketClick) {
-                    auto& pkt = app.sim.packets[app.activeDragPacket];
-                    ImVec2 uv = screen_to_uv(io.MousePos, tl, br);
-                    pkt.cx = std::clamp((double)uv.x, 0.0, 1.0);
-                    pkt.cy = std::clamp((double)uv.y, 0.0, 1.0);
-                    app.packetDragDirty = true;
-                }
-            }
-            break;
-        }
-        case AppState::DragAction::AdjustPacketMomentum: {
+        } else if (app.dragAction == AppState::DragAction::AdjustPacketMomentum) {
             if (app.activeDragPacket >= 0 && app.activeDragPacket < static_cast<int>(app.sim.packets.size())) {
                 auto& pkt = app.sim.packets[app.activeDragPacket];
                 ImVec2 centerUV((float)pkt.cx, (float)pkt.cy);
@@ -1446,29 +1679,23 @@ static void draw_view_content(AppState& app) {
                 pkt.ky = deltaUV.y / kMomentumUVScale;
                 app.packetDragDirty = true;
             }
-            break;
+        } else if (app.dragAction == AppState::DragAction::AddBox || app.dragAction == AppState::DragAction::AddPacket) {
+            // draw-only below
+        } else if (app.dragAction == AppState::DragAction::AddWell) {
+            // no preview
         }
-        case AppState::DragAction::MoveWell: {
-            if (app.activeDragWell >= 0 && app.activeDragWell < static_cast<int>(app.sim.pfield.wells.size())) {
-                auto& well = app.sim.pfield.wells[app.activeDragWell];
-                ImVec2 uv = screen_to_uv(io.MousePos, tl, br);
-                well.cx = std::clamp((double)uv.x, 0.0, 1.0);
-                well.cy = std::clamp((double)uv.y, 0.0, 1.0);
-                app.sim.pfield.build(app.sim.V);
-            }
-            break;
-        }
-        default:
-            break;
-        }
+    }
+
+    if ((app.dragAction == AppState::DragAction::AddBox || app.dragAction == AppState::DragAction::AddPacket) && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
+        ImU32 col = make_rgba(1, 1, 1, 0.7f);
+        dl->AddRect(app.dragStart, app.dragEnd, col, 0.0f, 0, 2.0f);
     }
 
     if (app.dragAction != AppState::DragAction::None && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
         ImVec2 uv0 = screen_to_uv(app.dragStart, tl, br);
         ImVec2 uv1 = screen_to_uv(app.dragEnd, tl, br);
 
-        switch (app.dragAction) {
-        case AppState::DragAction::AddBox: {
+        if (app.dragAction == AppState::DragAction::AddBox) {
             sim::Box b;
             b.x0 = std::clamp((double)uv0.x, 0.0, 1.0);
             b.y0 = std::clamp((double)uv0.y, 0.0, 1.0);
@@ -1477,14 +1704,10 @@ static void draw_view_content(AppState& app) {
             b.height = app.boxHeight;
             int newIndex = static_cast<int>(app.sim.pfield.boxes.size());
             app.sim.addBox(b);
-            app.selectedBox = newIndex;
+            selection_set_single(app, AppState::SelectedItem::Kind::Box, newIndex);
             app.boxEditorOpen = true;
             app.boxEditorPos = io.MousePos + ImVec2(16, 16);
-            app.selectedPacket = -1;
-            app.packetEditorOpen = false;
-            break;
-        }
-        case AppState::DragAction::AddPacket: {
+        } else if (app.dragAction == AppState::DragAction::AddPacket) {
             ImVec2 uv_center = screen_to_uv(app.dragStart, tl, br);
             ImVec2 uv_release = screen_to_uv(app.dragEnd, tl, br);
             sim::Packet p;
@@ -1503,28 +1726,10 @@ static void draw_view_content(AppState& app) {
             }
             app.sim.packets.push_back(p);
             app.sim.injectGaussian(p);
-            app.selectedPacket = static_cast<int>(app.sim.packets.size()) - 1;
+            selection_set_single(app, AppState::SelectedItem::Kind::Packet, static_cast<int>(app.sim.packets.size()) - 1);
             app.packetEditorOpen = true;
             app.packetEditorPos = io.MousePos + ImVec2(16, 16);
-            app.selectedBox = -1;
-            app.boxEditorOpen = false;
-            break;
-        }
-        case AppState::DragAction::MovePacket:
-            if (app.pendingPacketClick && app.activeDragPacket >= 0) {
-                app.selectedPacket = app.activeDragPacket;
-                app.packetEditorOpen = true;
-                app.packetEditorPos = io.MousePos + ImVec2(16, 16);
-            } else if (app.packetDragDirty) {
-                app.sim.reset();
-            }
-            break;
-        case AppState::DragAction::AdjustPacketMomentum:
-            if (app.packetDragDirty) {
-                app.sim.reset();
-            }
-            break;
-        case AppState::DragAction::AddWell: {
+        } else if (app.dragAction == AppState::DragAction::AddWell) {
             ImVec2 uv_center = screen_to_uv(app.dragEnd, tl, br);
             sim::RadialWell w;
             w.cx = std::clamp((double)uv_center.x, 0.0, 1.0);
@@ -1533,20 +1738,21 @@ static void draw_view_content(AppState& app) {
             w.radius = std::clamp(app.wellRadius, 0.01, 0.5);
             w.profile = app.wellProfile;
             app.sim.addWell(w);
-            app.selectedWell = static_cast<int>(app.sim.pfield.wells.size()) - 1;
+            selection_set_single(app, AppState::SelectedItem::Kind::Well, static_cast<int>(app.sim.pfield.wells.size()) - 1);
             app.wellEditorOpen = true;
             app.wellEditorPos = io.MousePos + ImVec2(16, 16);
-            app.selectedBox = -1;
-            app.boxEditorOpen = false;
-            app.selectedPacket = -1;
-            app.packetEditorOpen = false;
-            break;
-        }
-        case AppState::DragAction::MoveWell:
-            // keep selection; editor already open
-            break;
-        default:
-            break;
+        } else if (app.dragAction == AppState::DragAction::AdjustPacketMomentum) {
+            if (app.packetDragDirty) app.sim.reset();
+        } else if (app.dragAction == AppState::DragAction::MoveSelection) {
+            if (app.pendingPacketClick && app.dragPrimaryKind == AppState::SelectedItem::Kind::Packet) {
+                selection_set_single(app, AppState::SelectedItem::Kind::Packet, app.dragPrimaryIdx);
+                app.packetEditorOpen = true;
+                app.packetEditorPos = io.MousePos + ImVec2(16, 16);
+            } else if (app.selectionDragDirty) {
+                app.sim.reset();
+            }
+        } else if (app.dragAction == AppState::DragAction::AdjustBoxEdge) {
+            // potential already rebuilt during drag
         }
 
         app.dragAction = AppState::DragAction::None;
@@ -1554,12 +1760,11 @@ static void draw_view_content(AppState& app) {
         app.activeDragWell = -1;
         app.pendingPacketClick = false;
         app.packetDragDirty = false;
+        app.selectionDragDirty = false;
+        app.dragBoxEdge = AppState::BoxEdge::None;
+        app.dragPrimaryIdx = -1;
     }
 
-    if ((app.dragAction == AppState::DragAction::AddBox || app.dragAction == AppState::DragAction::AddPacket) && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-        ImU32 col = make_rgba(1, 1, 1, 0.7f);
-        dl->AddRect(app.dragStart, app.dragEnd, col, 0.0f, 0, 2.0f);
-    }
 
     if (hovered) {
         ImVec2 uv = screen_to_uv(ImGui::GetIO().MousePos, tl, br);
@@ -1578,21 +1783,21 @@ static void draw_view_content(AppState& app) {
         if (ImGui::IsKeyPressed(ImGuiKey_Space)) app.sim.running = !app.sim.running;
         if (ImGui::IsKeyPressed(ImGuiKey_R)) app.sim.reset();
         if (ImGui::IsKeyPressed(ImGuiKey_Delete)) {
+            // Delete single-object selection (keep existing behavior)
             if (app.selectedBox >= 0) {
                 app.sim.pfield.boxes.erase(app.sim.pfield.boxes.begin() + app.selectedBox);
-                app.selectedBox = -1;
-                app.boxEditorOpen = false;
+                selection_clear(app);
                 app.sim.reset();
             } else if (app.selectedWell >= 0) {
                 if (app.selectedWell < static_cast<int>(app.sim.pfield.wells.size())) {
                     app.sim.pfield.wells.erase(app.sim.pfield.wells.begin() + app.selectedWell);
-                    app.selectedWell = -1;
-                    app.wellEditorOpen = false;
+                    selection_clear(app);
                     app.sim.reset();
                 }
             }
         }
     }
+
 
     draw_object_editors(app);
 }
@@ -2084,13 +2289,9 @@ int run_gui(GLFWwindow* window) {
                 }
                 if (targetNx != app.sim.Nx) {
                     app.sim.resize(targetNx, baseNy);
-                    app.selectedBox = -1;
-                    app.selectedPacket = -1;
-                    app.selectedWell = -1;
-                    app.boxEditorOpen = false;
-                    app.packetEditorOpen = false;
-                    app.wellEditorOpen = false;
+                    selection_clear(app);
                 }
+
                 app.initialGridApplied = true;
             }
         }
