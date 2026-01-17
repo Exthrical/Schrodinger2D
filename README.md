@@ -28,10 +28,10 @@ Build
 - Steps
   - `cd Schrodinger2D`
   - `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release`
-  - `cmake --build build -j`
+  - `cmake --build build --config Release`
 
 Run
-- GUI (if available): `./build/Schrodinger2D`
+- GUI (if available): `./build/Release/Schrodinger2D.exe`
 - Headless smoke example: `./build/Schrodinger2D --example examples/smoke_example.json`
   - Prints diagnostics: norm (mass) and left/right split as a proxy for reflection/transmission.
 
