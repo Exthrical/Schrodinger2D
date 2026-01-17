@@ -107,6 +107,8 @@ struct AppState {
     bool selectionDragDirty{false};
     ImVec2 dragStart{0,0};
     ImVec2 dragEnd{0,0};
+    ImVec2 mouseDownPos{0,0};
+
     double packetDragStartCx{0.0};
     double packetDragStartCy{0.0};
     double packetDragStartKx{0.0};
@@ -141,9 +143,15 @@ struct AppState {
          std::vector<sim::EigenState> states;
      } eigen;
 
-     // Scene IO
-     std::filesystem::path sceneLastSaveDir;
-     std::filesystem::path sceneLastLoadDir;
+    // Scene IO
+    std::filesystem::path sceneLastSaveDir;
+    std::filesystem::path sceneLastLoadDir;
+
+    // Deferred shift-multiselect (apply on mouse release if it was a click)
+    bool pendingShiftToggle{false};
+    SelectedItem::Kind pendingShiftToggleKind{SelectedItem::Kind::Box};
+    int pendingShiftToggleIdx{-1};
+
 
 
     // GL texture for field visualization
@@ -1626,6 +1634,8 @@ static void draw_view_content(AppState& app) {
     if (hovered && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) {
         app.dragStart = io.MousePos;
         app.dragEnd = io.MousePos;
+        app.mouseDownPos = io.MousePos;
+
         app.dragAction = AppState::DragAction::None;
         app.activeDragPacket = -1;
         app.activeDragWell = -1;
@@ -1634,8 +1644,11 @@ static void draw_view_content(AppState& app) {
         app.selectionDragDirty = false;
         app.dragBoxEdge = AppState::BoxEdge::None;
         app.dragPrimaryIdx = -1;
+        app.pendingShiftToggle = false;
+        app.pendingShiftToggleIdx = -1;
 
         const bool shift = io.KeyShift;
+
 
         // Edge hit test (topmost box wins)
         int edgeBoxIdx = -1;
@@ -1697,33 +1710,57 @@ static void draw_view_content(AppState& app) {
                 app.dragBoxEdge = edgeHit;
             } else if (hoveredPacketIdx >= 0) {
                 if (shift) {
-                    selection_toggle(app, AppState::SelectedItem::Kind::Packet, hoveredPacketIdx);
-                } else {
-                    selection_set_single(app, AppState::SelectedItem::Kind::Packet, hoveredPacketIdx);
-                }
+                    // Defer toggle until mouse release (unless this becomes a drag)
+                    app.pendingShiftToggle = true;
+                    app.pendingShiftToggleKind = AppState::SelectedItem::Kind::Packet;
+                    app.pendingShiftToggleIdx = hoveredPacketIdx;
 
-                // packet click opens editor unless it turns into a drag
-                if (app.selection.size() == 1 && app.selection[0].kind == AppState::SelectedItem::Kind::Packet) {
-                    app.packetEditorOpen = false;
-                    app.pendingPacketClick = true;
-                } else {
+                    // Dragging only starts on an already-selected object
+                    if (selection_contains(app, AppState::SelectedItem::Kind::Packet, hoveredPacketIdx)) {
+                        app.dragAction = AppState::DragAction::MoveSelection;
+                        app.dragPrimaryKind = AppState::SelectedItem::Kind::Packet;
+                        app.dragPrimaryIdx = hoveredPacketIdx;
+                    } else {
+                        app.dragAction = AppState::DragAction::None;
+                    }
+
                     app.packetEditorOpen = false;
                     app.pendingPacketClick = false;
+                } else {
+                    selection_set_single(app, AppState::SelectedItem::Kind::Packet, hoveredPacketIdx);
+
+                    // packet click opens editor unless it turns into a drag
+                    app.packetEditorOpen = false;
+                    app.pendingPacketClick = true;
+
+                    app.dragAction = AppState::DragAction::MoveSelection;
+                    app.dragPrimaryKind = AppState::SelectedItem::Kind::Packet;
+                    app.dragPrimaryIdx = hoveredPacketIdx;
                 }
 
-                app.dragAction = AppState::DragAction::MoveSelection;
-                app.dragPrimaryKind = AppState::SelectedItem::Kind::Packet;
-                app.dragPrimaryIdx = hoveredPacketIdx;
             } else if (hoveredWellIdx >= 0) {
                 if (shift) {
-                    selection_toggle(app, AppState::SelectedItem::Kind::Well, hoveredWellIdx);
+                    app.pendingShiftToggle = true;
+                    app.pendingShiftToggleKind = AppState::SelectedItem::Kind::Well;
+                    app.pendingShiftToggleIdx = hoveredWellIdx;
+
+                    if (selection_contains(app, AppState::SelectedItem::Kind::Well, hoveredWellIdx)) {
+                        app.dragAction = AppState::DragAction::MoveSelection;
+                        app.dragPrimaryKind = AppState::SelectedItem::Kind::Well;
+                        app.dragPrimaryIdx = hoveredWellIdx;
+                    } else {
+                        app.dragAction = AppState::DragAction::None;
+                    }
+
+                    app.wellEditorOpen = false;
                 } else {
                     selection_set_single(app, AppState::SelectedItem::Kind::Well, hoveredWellIdx);
+                    selection_sync_single_editors(app, io.MousePos);
+                    app.dragAction = AppState::DragAction::MoveSelection;
+                    app.dragPrimaryKind = AppState::SelectedItem::Kind::Well;
+                    app.dragPrimaryIdx = hoveredWellIdx;
                 }
-                selection_sync_single_editors(app, io.MousePos);
-                app.dragAction = AppState::DragAction::MoveSelection;
-                app.dragPrimaryKind = AppState::SelectedItem::Kind::Well;
-                app.dragPrimaryIdx = hoveredWellIdx;
+
             } else {
                 // box body hit (topmost wins)
                 int boxHit = -1;
@@ -1741,17 +1778,30 @@ static void draw_view_content(AppState& app) {
 
                 if (boxHit >= 0) {
                     if (shift) {
-                        selection_toggle(app, AppState::SelectedItem::Kind::Box, boxHit);
+                        app.pendingShiftToggle = true;
+                        app.pendingShiftToggleKind = AppState::SelectedItem::Kind::Box;
+                        app.pendingShiftToggleIdx = boxHit;
+
+                        if (selection_contains(app, AppState::SelectedItem::Kind::Box, boxHit)) {
+                            app.dragAction = AppState::DragAction::MoveSelection;
+                            app.dragPrimaryKind = AppState::SelectedItem::Kind::Box;
+                            app.dragPrimaryIdx = boxHit;
+                        } else {
+                            app.dragAction = AppState::DragAction::None;
+                        }
+
+                        app.boxEditorOpen = false;
                     } else {
                         selection_set_single(app, AppState::SelectedItem::Kind::Box, boxHit);
+                        selection_sync_single_editors(app, io.MousePos);
+                        app.dragAction = AppState::DragAction::MoveSelection;
+                        app.dragPrimaryKind = AppState::SelectedItem::Kind::Box;
+                        app.dragPrimaryIdx = boxHit;
                     }
-                    selection_sync_single_editors(app, io.MousePos);
-                    app.dragAction = AppState::DragAction::MoveSelection;
-                    app.dragPrimaryKind = AppState::SelectedItem::Kind::Box;
-                    app.dragPrimaryIdx = boxHit;
                 } else {
                     if (!shift) selection_clear(app);
                 }
+
             }
         } else if (app.mode == AppState::Mode::AddBox) {
             app.dragAction = AppState::DragAction::AddBox;
@@ -1764,7 +1814,17 @@ static void draw_view_content(AppState& app) {
 
 
     if (app.dragAction != AppState::DragAction::None && ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-        app.dragEnd = io.MousePos;
+            app.dragEnd = io.MousePos;
+
+        // Cancel pending shift toggle if we started moving
+        if (app.pendingShiftToggle) {
+            ImVec2 dpx = app.dragEnd - app.mouseDownPos;
+            float dist2 = dpx.x * dpx.x + dpx.y * dpx.y;
+            if (dist2 > kDragThresholdPx * kDragThresholdPx) {
+                app.pendingShiftToggle = false;
+                app.pendingShiftToggleIdx = -1;
+            }
+        }
 
         if (app.dragAction == AppState::DragAction::MoveSelection) {
             ImVec2 uv0 = screen_to_uv(app.dragStart, tl, br);
@@ -1835,11 +1895,22 @@ static void draw_view_content(AppState& app) {
         dl->AddRect(app.dragStart, app.dragEnd, col, 0.0f, 0, 2.0f);
     }
 
-    if (app.dragAction != AppState::DragAction::None && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
+    if ((app.dragAction != AppState::DragAction::None || app.pendingShiftToggle) && ImGui::IsMouseReleased(ImGuiMouseButton_Left)) {
         ImVec2 uv0 = screen_to_uv(app.dragStart, tl, br);
         ImVec2 uv1 = screen_to_uv(app.dragEnd, tl, br);
 
+        // Apply deferred shift-toggle if it was a click (not a drag)
+        if (app.pendingShiftToggle && app.pendingShiftToggleIdx >= 0) {
+            ImVec2 dpx = io.MousePos - app.mouseDownPos;
+            float dist2 = dpx.x * dpx.x + dpx.y * dpx.y;
+            if (dist2 <= kDragThresholdPx * kDragThresholdPx) {
+                selection_toggle(app, app.pendingShiftToggleKind, app.pendingShiftToggleIdx);
+            }
+        }
+
         if (app.dragAction == AppState::DragAction::AddBox) {
+
+
             sim::Box b;
             b.x0 = std::clamp((double)uv0.x, 0.0, 1.0);
             b.y0 = std::clamp((double)uv0.y, 0.0, 1.0);
@@ -1907,7 +1978,10 @@ static void draw_view_content(AppState& app) {
         app.selectionDragDirty = false;
         app.dragBoxEdge = AppState::BoxEdge::None;
         app.dragPrimaryIdx = -1;
+        app.pendingShiftToggle = false;
+        app.pendingShiftToggleIdx = -1;
     }
+
 
 
     if (hovered) {
