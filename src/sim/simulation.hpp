@@ -16,6 +16,28 @@ struct EigenState {
     std::vector<std::complex<double>> psi;
 };
 
+struct StabilityConfig {
+    double rel_mass_drift_tol{0.15};
+    double rel_interior_mass_drift_tol{1.0};
+    int warmup_steps{8};
+    bool auto_pause_on_instability{true};
+};
+
+struct StabilityDiagnostics {
+    double initial_mass{0.0};
+    double current_mass{0.0};
+    double initial_interior_mass{0.0};
+    double current_interior_mass{0.0};
+    double left_mass{0.0};
+    double right_mass{0.0};
+    double rel_mass_drift{0.0};
+    double rel_interior_mass_drift{0.0};
+    int steps_since_baseline{0};
+    bool has_non_finite{false};
+    bool unstable{false};
+    std::string reason;
+};
+
 struct Simulation {
     int Nx{372}, Ny{300};
     double Lx{1.0}, Ly{1.0};      // physical domain size (arbitrary units)
@@ -34,6 +56,10 @@ struct Simulation {
     // Numerics
     CrankNicolsonADI solver;
 
+    // Stability / diagnostics
+    StabilityConfig stability;
+    StabilityDiagnostics diagnostics;
+
     Simulation();
 
     void resize(int newNx, int newNy);
@@ -48,7 +74,10 @@ struct Simulation {
 
     // Diagnostics
     double mass() const;        // discrete L2 norm integral sum |psi|^2 dx dy
+    double interior_mass() const; // excludes CAP border band
     void mass_split(double& left, double& right) const; // split by vertical midline
+    void refresh_diagnostics_baseline();
+    void update_diagnostics(bool is_time_step);
 
     // Eigenmodes of the current Hamiltonian (real part of V, Dirichlet boundary)
     std::vector<EigenState> compute_eigenstates(int modes, int maxBasis = 64, int maxIter = 200, double tol = 1e-6) const;
