@@ -7,6 +7,14 @@
 
 namespace sim {
 
+namespace {
+
+static inline bool is_finite_complex(const std::complex<double>& z) {
+    return std::isfinite(std::real(z)) && std::isfinite(std::imag(z));
+}
+
+} // namespace
+
 Simulation::Simulation() {
     resize(Nx, Ny);
 }
@@ -41,6 +49,7 @@ void Simulation::reset() {
     pfield.Ly = Ly;
     pfield.build(V);
     for (const auto& p : packets) injectGaussian(p);
+    refresh_diagnostics_baseline();
 }
 
 void Simulation::injectGaussian(const Packet& p) {
@@ -64,20 +73,27 @@ void Simulation::injectGaussian(const Packet& p) {
             psi[idx(i, j)] += w;
         }
     }
+    update_diagnostics(false);
 }
 
 void Simulation::addBox(const Box& b) {
     pfield.boxes.push_back(b);
     pfield.build(V);
+    update_diagnostics(false);
 }
 
 void Simulation::addWell(const RadialWell& w) {
     pfield.wells.push_back(w);
     pfield.build(V);
+    update_diagnostics(false);
 }
 
 void Simulation::step() {
     solver.step(psi, Nx, Ny, dx, dy, dt, V);
+    update_diagnostics(true);
+    if (diagnostics.unstable && stability.auto_pause_on_instability) {
+        running = false;
+    }
 }
 
 void Simulation::stepN(int n) {
@@ -90,16 +106,133 @@ double Simulation::mass() const {
     return sum * dx * dy;
 }
 
-void Simulation::mass_split(double& left, double& right) const {
-    int mid = Nx / 2;
-    double l = 0.0, r = 0.0;
-    for (int j = 0; j < Ny; ++j) {
-        for (int i = 0; i < Nx; ++i) {
-            double w = std::norm(psi[idx(i,j)]) * dx * dy;
-            if (i < mid) l += w; else r += w;
+double Simulation::interior_mass() const {
+    const int wx = std::max(1, static_cast<int>(std::round(pfield.cap_ratio * Nx)));
+    const int wy = std::max(1, static_cast<int>(std::round(pfield.cap_ratio * Ny)));
+
+    int i0 = wx;
+    int i1 = Nx - wx;
+    int j0 = wy;
+    int j1 = Ny - wy;
+    if (i1 <= i0 || j1 <= j0) {
+        i0 = 0;
+        i1 = Nx;
+        j0 = 0;
+        j1 = Ny;
+    }
+
+    double sum = 0.0;
+    for (int j = j0; j < j1; ++j) {
+        for (int i = i0; i < i1; ++i) {
+            sum += std::norm(psi[idx(i, j)]);
         }
     }
-    left = l; right = r;
+    return sum * dx * dy;
+}
+
+void Simulation::mass_split(double& left, double& right) const {
+    left = diagnostics.left_mass;
+    right = diagnostics.right_mass;
+}
+
+void Simulation::refresh_diagnostics_baseline() {
+    diagnostics = StabilityDiagnostics{};
+    update_diagnostics(false);
+    diagnostics.initial_mass = diagnostics.current_mass;
+    diagnostics.initial_interior_mass = diagnostics.current_interior_mass;
+    diagnostics.rel_mass_drift = 0.0;
+    diagnostics.rel_interior_mass_drift = 0.0;
+    diagnostics.steps_since_baseline = 0;
+    diagnostics.unstable = false;
+    diagnostics.reason.clear();
+}
+
+void Simulation::update_diagnostics(bool is_time_step) {
+    const int mid = Nx / 2;
+    const int wx = std::max(1, static_cast<int>(std::round(pfield.cap_ratio * Nx)));
+    const int wy = std::max(1, static_cast<int>(std::round(pfield.cap_ratio * Ny)));
+    int i0 = wx;
+    int i1 = Nx - wx;
+    int j0 = wy;
+    int j1 = Ny - wy;
+    if (i1 <= i0 || j1 <= j0) {
+        i0 = 0;
+        i1 = Nx;
+        j0 = 0;
+        j1 = Ny;
+    }
+
+    bool finite = true;
+    double total = 0.0;
+    double interior = 0.0;
+    double left = 0.0;
+    double right = 0.0;
+    for (int j = 0; j < Ny; ++j) {
+        const bool insideY = (j >= j0 && j < j1);
+        for (int i = 0; i < Nx; ++i) {
+            const auto z = psi[idx(i, j)];
+            finite = finite && is_finite_complex(z);
+            const double w = std::norm(z) * dx * dy;
+            total += w;
+            if (i < mid) left += w; else right += w;
+            if (insideY && i >= i0 && i < i1) interior += w;
+        }
+    }
+
+    diagnostics.current_mass = total;
+    diagnostics.current_interior_mass = interior;
+    diagnostics.left_mass = left;
+    diagnostics.right_mass = right;
+    diagnostics.has_non_finite = !finite;
+
+    const double massDenom = std::max(1e-15, diagnostics.initial_mass);
+    const double interiorDenom = std::max(1e-15, diagnostics.initial_interior_mass);
+    diagnostics.rel_mass_drift = std::fabs(total - diagnostics.initial_mass) / massDenom;
+    diagnostics.rel_interior_mass_drift = std::fabs(interior - diagnostics.initial_interior_mass) / interiorDenom;
+    if (is_time_step) {
+        diagnostics.steps_since_baseline += 1;
+    }
+
+    if (diagnostics.unstable) return;
+
+    if (!finite) {
+        diagnostics.unstable = true;
+        diagnostics.reason = "psi contains NaN/Inf";
+        return;
+    }
+
+    if (diagnostics.steps_since_baseline <= std::max(0, stability.warmup_steps)) {
+        return;
+    }
+
+    const bool capEnabled = pfield.cap_strength > 1e-12 && pfield.cap_ratio > 0.0;
+    const double totalTol = std::max(0.0, stability.rel_mass_drift_tol);
+    const double interiorTol = std::max(0.0, stability.rel_interior_mass_drift_tol);
+
+    if (capEnabled) {
+        const double allowed = diagnostics.initial_mass * (1.0 + totalTol);
+        if (diagnostics.current_mass > allowed) {
+            diagnostics.unstable = true;
+            diagnostics.reason = "total mass grew unexpectedly with CAP";
+            return;
+        }
+        if (diagnostics.rel_interior_mass_drift > interiorTol) {
+            diagnostics.unstable = true;
+            diagnostics.reason = "interior mass drift exceeded tolerance";
+            return;
+        }
+    } else {
+        if (diagnostics.rel_mass_drift > totalTol) {
+            diagnostics.unstable = true;
+            diagnostics.reason = "mass drift exceeded tolerance";
+            return;
+        }
+        if (diagnostics.rel_interior_mass_drift > interiorTol) {
+            diagnostics.unstable = true;
+            diagnostics.reason = "interior mass drift exceeded tolerance";
+            return;
+        }
+    }
 }
 
 static void tridiagonal_eigen(std::vector<double> diag, std::vector<double> off, std::vector<double>& evals, std::vector<std::vector<double>>& evecs) {
@@ -265,6 +398,7 @@ void Simulation::apply_eigenstate(const EigenState& state) {
     psi = state.psi;
     packets.clear();
     running = false;
+    refresh_diagnostics_baseline();
 }
 
 } // namespace sim

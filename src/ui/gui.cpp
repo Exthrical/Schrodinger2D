@@ -26,6 +26,8 @@
 #include <ctime>
 #include <system_error>
 #include <fstream>
+#include <cstring>
+#include <cstdio>
 
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -33,6 +35,8 @@
 
 #include "sim/simulation.hpp"
 #include "io/scene.hpp"
+#include "ui/field_renderer.hpp"
+#include "ui/presets.hpp"
 
 namespace {
 
@@ -54,6 +58,7 @@ struct AppState {
     double viewportAspect{1.0};
     float viewportAvailWidth{1.0f};
     float viewportAvailHeight{1.0f};
+    int stepsPerFrame{1};
     enum class LastEdited { None, Nx, Ny } lastEdited{LastEdited::None};
 
     // Packet placement defaults
@@ -125,6 +130,17 @@ struct AppState {
     ImVec2 wellEditorPos{0,0};
 
     bool showStyleEditor{false};
+    struct StyleTokens {
+        float cornerRounding{2.0f};
+        float borderWeight{1.0f};
+        float density{1.0f};
+        float fontScale{1.0f};
+        float accentHue{0.01f};
+        float accentSat{0.8f};
+        float accentVal{0.95f};
+        float panelLift{0.03f};
+        bool antiAliased{true};
+    } styleTokens;
     float toastTimer{0.0f};
     std::string toastMessage;
 
@@ -146,6 +162,9 @@ struct AppState {
     // Scene IO
     std::filesystem::path sceneLastSaveDir;
     std::filesystem::path sceneLastLoadDir;
+    char saveScenePath[512]{};
+    char loadScenePath[512]{};
+    bool scenePathInit{false};
 
     // Deferred shift-multiselect (apply on mouse release if it was a click)
     bool pendingShiftToggle{false};
@@ -157,6 +176,10 @@ struct AppState {
     // GL texture for field visualization
     GLuint tex{0};
     int texW{0}, texH{0};
+    std::vector<unsigned char> rgbaBuffer;
+    bool fieldDirty{true};
+    bool potentialDirtyDrag{false};
+    bool lastUnstable{false};
 };
 
 static void load_default_doubleslit_scene(AppState& app);
@@ -173,6 +196,84 @@ static void take_screenshot(AppState& app);
 static inline ImVec2 operator+(ImVec2 a, ImVec2 b) { return ImVec2(a.x + b.x, a.y + b.y); }
 static inline ImVec2 operator-(ImVec2 a, ImVec2 b) { return ImVec2(a.x - b.x, a.y - b.y); }
 static inline ImVec2 operator*(ImVec2 a, float s) { return ImVec2(a.x * s, a.y * s); }
+
+static void help_marker(const char* text) {
+    ImGui::TextDisabled("(?)");
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort) && text != nullptr) {
+        ImGui::BeginTooltip();
+        ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f);
+        ImGui::TextUnformatted(text);
+        ImGui::PopTextWrapPos();
+        ImGui::EndTooltip();
+    }
+}
+
+template <typename T>
+static bool slider_block(const char* label,
+                         const char* id,
+                         ImGuiDataType type,
+                         T* value,
+                         const T* vmin,
+                         const T* vmax,
+                         const char* format,
+                         ImGuiSliderFlags flags = 0,
+                         const char* help = nullptr) {
+    ImGui::TextUnformatted(label);
+    if (help != nullptr) {
+        ImGui::SameLine();
+        help_marker(help);
+    }
+    ImGui::SetNextItemWidth(-1.0f);
+    return ImGui::SliderScalar(id, type, value, vmin, vmax, format, flags);
+}
+
+static ImVec4 Darken(const ImVec4& c, float amount);
+static ImVec4 Lighten(const ImVec4& c, float amount);
+
+static void apply_style_tokens(AppState& app) {
+    ImGuiStyle& style = ImGui::GetStyle();
+    const auto& t = app.styleTokens;
+
+    style.WindowRounding = t.cornerRounding;
+    style.FrameRounding = t.cornerRounding;
+    style.GrabRounding = t.cornerRounding;
+    style.WindowBorderSize = t.borderWeight;
+    style.FrameBorderSize = std::max(0.0f, t.borderWeight - 0.25f);
+    style.ItemSpacing = ImVec2(8.0f * t.density, 6.0f * t.density);
+    style.ItemInnerSpacing = ImVec2(6.0f * t.density, 4.0f * t.density);
+    style.FramePadding = ImVec2(10.0f * t.density, 6.0f * t.density);
+    style.AntiAliasedLines = t.antiAliased;
+    style.AntiAliasedFill = t.antiAliased;
+    ImGui::GetIO().FontGlobalScale = t.fontScale;
+
+    float ar, ag, ab;
+    ImGui::ColorConvertHSVtoRGB(t.accentHue, t.accentSat, t.accentVal, ar, ag, ab);
+    ImVec4 accent(ar, ag, ab, 1.0f);
+
+    const float base = 0.06f;
+    const float lift = std::clamp(t.panelLift, 0.0f, 0.3f);
+    ImVec4 bg0(base, base, base + 0.01f, 1.0f);
+    ImVec4 bg1(base + lift, base + lift, base + lift + 0.01f, 1.0f);
+    ImVec4 bg2(base + 2.0f * lift, base + 2.0f * lift, base + 2.0f * lift + 0.01f, 1.0f);
+
+    ImVec4* c = style.Colors;
+    c[ImGuiCol_WindowBg] = bg0;
+    c[ImGuiCol_ChildBg] = bg1;
+    c[ImGuiCol_FrameBg] = bg2;
+    c[ImGuiCol_FrameBgHovered] = Lighten(bg2, 0.15f);
+    c[ImGuiCol_FrameBgActive] = Lighten(bg2, 0.25f);
+    c[ImGuiCol_Button] = bg2;
+    c[ImGuiCol_ButtonHovered] = Lighten(bg2, 0.18f);
+    c[ImGuiCol_ButtonActive] = Lighten(bg2, 0.28f);
+    c[ImGuiCol_Header] = bg2;
+    c[ImGuiCol_HeaderHovered] = Lighten(bg2, 0.16f);
+    c[ImGuiCol_HeaderActive] = Lighten(bg2, 0.26f);
+    c[ImGuiCol_Border] = ImVec4(base + t.borderWeight * 0.08f, base + t.borderWeight * 0.08f, base + t.borderWeight * 0.1f, 1.0f);
+    c[ImGuiCol_CheckMark] = accent;
+    c[ImGuiCol_SliderGrab] = accent;
+    c[ImGuiCol_SliderGrabActive] = Darken(accent, 0.12f);
+    c[ImGuiCol_PlotLines] = accent;
+}
 
 static bool selection_contains(const AppState& app, AppState::SelectedItem::Kind kind, int idx) {
     for (const auto& it : app.selection) {
@@ -399,18 +500,7 @@ static ImVec4 Lighten(const ImVec4& c, float amount) {
 }
 
 static void ensure_texture(AppState& app, int w, int h) {
-    if (app.tex == 0) {
-        glGenTextures(1, &app.tex);
-    }
-    if (app.texW != w || app.texH != h) {
-        app.texW = w;
-        app.texH = h;
-        glBindTexture(GL_TEXTURE_2D, app.tex);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-        glBindTexture(GL_TEXTURE_2D, 0);
-    }
+    ui::ensure_texture(app.tex, app.texW, app.texH, w, h);
 }
 
 static ImU32 make_rgba(float r, float g, float b, float a = 1.0f) {
@@ -423,397 +513,79 @@ static ImU32 make_rgba(float r, float g, float b, float a = 1.0f) {
 
 static void render_field_to_rgba(const sim::Simulation& sim, std::vector<unsigned char>& outRGBA,
                                  bool showPotential, sim::ViewMode view, bool normalizeView) {
-    const int W = sim.Nx, H = sim.Ny;
-    outRGBA.resize((size_t)W * H * 4);
-    double maxmag = 1.0;
-    if (normalizeView) {
-        double m = 1e-12;
-        for (auto& z : sim.psi) {
-            m = std::max(m, (double)std::abs(z));
-        }
-        maxmag = m;
-    }
-    double maxVre = 0.0;
-    if (showPotential) {
-        for (int j = 0; j < H; ++j) {
-            for (int i = 0; i < W; ++i) {
-                maxVre = std::max(maxVre, std::abs((double)std::real(sim.V[sim.idx(i, j)])));
-            }
-        }
-    }
-    const double Vscale = (maxVre > 1e-12 ? 0.8 * maxVre : 20.0);
-    for (int j = 0; j < H; ++j) {
-        for (int i = 0; i < W; ++i) {
-            auto z = sim.psi[sim.idx(i, j)];
-            float r = 0, g = 0, b = 0;
-            if (view == sim::ViewMode::Real) {
-                float v = (float)(0.5 + 0.5 * (std::real(z) / maxmag));
-                r = g = b = v;
-            } else if (view == sim::ViewMode::Imag) {
-                float v = (float)(0.5 + 0.5 * (std::imag(z) / maxmag));
-                r = g = b = v;
-            } else if (view == sim::ViewMode::Magnitude) {
-                float v = (float)std::min(1.0, std::abs(z) / maxmag);
-                r = g = b = v;
-            } else if (view == sim::ViewMode::Phase) {
-                const double PI = 3.14159265358979323846;
-                double phase = std::atan2(std::imag(z), std::real(z));
-                float h = (float)((phase + PI) / (2.0 * PI));
-                float s = 1.0f;
-                float v = normalizeView ? 1.0f : (float)std::min(1.0, std::abs(z) / maxmag);
-                float c = v * s;
-                float x = c * (1 - (float)std::fabs(std::fmod(h * 6.0f, 2.0f) - 1));
-                float m = v - c;
-                float rr = 0, gg = 0, bb = 0;
-                int hi = (int)std::floor(h * 6.0f) % 6;
-                if (hi == 0)      { rr = c; gg = x; bb = 0; }
-                else if (hi == 1) { rr = x; gg = c; bb = 0; }
-                else if (hi == 2) { rr = 0; gg = c; bb = x; }
-                else if (hi == 3) { rr = 0; gg = x; bb = c; }
-                else if (hi == 4) { rr = x; gg = 0; bb = c; }
-                else              { rr = c; gg = 0; bb = x; }
-                r = rr + m; g = gg + m; b = bb + m;
-            } else {
-                const double PI = 3.14159265358979323846;
-                double mag = std::abs(z) / maxmag;
-                double phase = std::atan2(std::imag(z), std::real(z));
-                float h = (float)((phase + PI) / (2.0 * PI));
-                float s = 1.0f;
-                float v = (float)std::min(1.0, mag);
-                float c = v * s;
-                float x = c * (1 - (float)std::fabs(std::fmod(h * 6.0f, 2.0f) - 1));
-                float m = v - c;
-                float rr = 0, gg = 0, bb = 0;
-                int hi = (int)std::floor(h * 6.0f) % 6;
-                if (hi == 0)      { rr = c; gg = x; bb = 0; }
-                else if (hi == 1) { rr = x; gg = c; bb = 0; }
-                else if (hi == 2) { rr = 0; gg = c; bb = x; }
-                else if (hi == 3) { rr = 0; gg = x; bb = c; }
-                else if (hi == 4) { rr = x; gg = 0; bb = c; }
-                else              { rr = c; gg = 0; bb = x; }
-                r = rr + m; g = gg + m; b = bb + m;
-            }
-
-            float a = 1.0f;
-            if (showPotential) {
-                auto V = sim.V[sim.idx(i, j)];
-                float pv = (float)std::clamp(std::real(V) / Vscale, -1.0, 1.0);
-                if (pv > 0) { r = std::min(1.0f, r + pv * 0.3f); }
-                else if (pv < 0) { b = std::min(1.0f, b + (-pv) * 0.3f); }
-            }
-
-            size_t k = (size_t)((j * W + i) * 4);
-            outRGBA[k + 0] = (unsigned char)std::round(r * 255.0f);
-            outRGBA[k + 1] = (unsigned char)std::round(g * 255.0f);
-            outRGBA[k + 2] = (unsigned char)std::round(b * 255.0f);
-            outRGBA[k + 3] = (unsigned char)std::round(a * 255.0f);
-        }
-    }
+    ui::render_field_to_rgba(sim, outRGBA, showPotential, view, normalizeView);
 }
 
 static void load_default_twowall_scene(AppState& app) {
-    app.sim.running = false;
-    app.sim.pfield.boxes.clear();
-    app.sim.pfield.wells.clear();
-    app.sim.packets.clear();
+    ui::presets::load_default_twowall_scene(app.sim);
     selection_clear(app);
-
-
-    app.sim.pfield.boxes.push_back(sim::Box{0.48, 0.0, 0.52, 1.0, 2400.0});
-    app.sim.pfield.build(app.sim.V);
-
-    sim::Packet p1{0.25, 0.75, 0.05, 1.0, 10.0, -1.0};
-    app.sim.packets.push_back(p1);
-    sim::Packet p2{0.25, 0.25, 0.05, 1.0, 42.0, 4.0};
-    app.sim.packets.push_back(p2);
-    app.sim.reset();
+    app.fieldDirty = true;
 }
 
 static void load_default_doubleslit_scene(AppState& app) {
-    app.sim.running = false;
-    app.sim.pfield.boxes.clear();
-    app.sim.pfield.wells.clear();
-    app.sim.packets.clear();
+    ui::presets::load_default_doubleslit_scene(app.sim);
     selection_clear(app);
-
-
-    app.sim.pfield.boxes.push_back(sim::Box{0.48, 0.0, 0.52, 0.4, 2400.0});
-    app.sim.pfield.boxes.push_back(sim::Box{0.48, 0.6, 0.52, 1.0, 2400.0});
-    app.sim.pfield.boxes.push_back(sim::Box{0.48, 0.45, 0.52, 0.55, 2400.0});
-    app.sim.pfield.build(app.sim.V);
-
-    sim::Packet p1{0.25, 0.5, 0.05, 1.0, 24.0, 0.0};
-    app.sim.packets.push_back(p1);
-    app.sim.reset();
+    app.fieldDirty = true;
 }
 
 static void load_default_doubleslit2_scene(AppState& app) {
-    app.sim.running = false;
-    app.sim.pfield.boxes.clear();
-    app.sim.pfield.wells.clear();
-    app.sim.packets.clear();
-    app.sim.dt = 0.000010;
+    ui::presets::load_default_doubleslit2_scene(app.sim);
     selection_clear(app);
-
-
-    app.sim.pfield.boxes.push_back(sim::Box{0.48, 0.0, 0.52, 0.4, 100000.0});
-    app.sim.pfield.boxes.push_back(sim::Box{0.48, 0.6, 0.52, 1.0, 100000.0});
-    app.sim.pfield.boxes.push_back(sim::Box{0.48, 0.45, 0.52, 0.55, 100000.0});
-    app.sim.pfield.build(app.sim.V);
-
-    sim::Packet p1{0.25, 0.5, 0.05, 1.0, 192.0, 0.0};
-    app.sim.packets.push_back(p1);
-    app.sim.reset();
+    app.fieldDirty = true;
 }
 
 static void load_counterpropagating_scene(AppState& app) {
-    app.sim.running = false;
-    app.sim.pfield.boxes.clear();
-    app.sim.pfield.wells.clear();
-    app.sim.packets.clear();
+    ui::presets::load_counterpropagating_scene(app.sim);
     selection_clear(app);
-
-
-    app.sim.pfield.build(app.sim.V);
-
-    sim::Packet left{0.28, 0.5, 0.045, 0.8, 22.0, 0.0};
-    sim::Packet right{0.72, 0.5, 0.045, 0.8, -22.0, 0.0};
-    sim::Packet offset{0.5, 0.68, 0.035, 0.6, -6.0, -10.0};
-    app.sim.packets.push_back(left);
-    app.sim.packets.push_back(right);
-    app.sim.packets.push_back(offset);
-    app.sim.reset();
+    app.fieldDirty = true;
 }
 
 static void load_waveguide_scene(AppState& app) {
-    app.sim.running = false;
-    app.sim.pfield.boxes.clear();
-    app.sim.pfield.wells.clear();
-    app.sim.packets.clear();
+    ui::presets::load_waveguide_scene(app.sim);
     selection_clear(app);
-
-
-    // Build a narrow S-shaped waveguide using axis-aligned barriers.
-    app.sim.pfield.boxes.push_back(sim::Box{0.0, 0.0, 1.0, 0.08, 2200.0});
-    app.sim.pfield.boxes.push_back(sim::Box{0.0, 0.92, 1.0, 1.0, 2200.0});
-    app.sim.pfield.boxes.push_back(sim::Box{0.36, 0.0, 0.44, 0.38, 2200.0});
-    app.sim.pfield.boxes.push_back(sim::Box{0.56, 0.62, 0.64, 1.0, 2200.0});
-    app.sim.pfield.build(app.sim.V);
-
-    sim::Packet guide{0.12, 0.5, 0.05, 1.0, 28.0, 0.0};
-    app.sim.packets.push_back(guide);
-    app.sim.reset();
+    app.fieldDirty = true;
 }
 
 static void load_trap_scene(AppState& app) {
-    app.sim.running = false;
-    app.sim.pfield.boxes.clear();
-    app.sim.pfield.wells.clear();
-    app.sim.packets.clear();
+    ui::presets::load_trap_scene(app.sim);
     selection_clear(app);
-
-
-    // Create a square trap with a central obstacle to seed orbiting dynamics.
-    app.sim.pfield.boxes.push_back(sim::Box{0.1, 0.1, 0.9, 0.12, 3400.0});
-    app.sim.pfield.boxes.push_back(sim::Box{0.1, 0.88, 0.9, 0.9, 3400.0});
-    app.sim.pfield.boxes.push_back(sim::Box{0.1, 0.1, 0.12, 0.9, 3400.0});
-    app.sim.pfield.boxes.push_back(sim::Box{0.88, 0.1, 0.9, 0.9, 3400.0});
-    app.sim.pfield.boxes.push_back(sim::Box{0.43, 0.43, 0.57, 0.57, 2800.0});
-    app.sim.pfield.wells.push_back(sim::RadialWell{0.5, 0.5, -320.0, 0.08, sim::RadialWell::Profile::SoftCoulomb});
-    app.sim.pfield.build(app.sim.V);
-
-    sim::Packet ring1{0.3, 0.5, 0.04, 0.7, 12.0, 6.0};
-    sim::Packet ring2{0.7, 0.5, 0.04, 0.7, -12.0, -6.0};
-    sim::Packet ring3{0.5, 0.3, 0.035, 0.6, 0.0, 14.0};
-    app.sim.packets.push_back(ring1);
-    app.sim.packets.push_back(ring2);
-    app.sim.packets.push_back(ring3);
-    app.sim.reset();
+    app.fieldDirty = true;
 }
 
 static void load_central_well_scene(AppState& app) {
-    app.sim.running = false;
-    app.sim.pfield.boxes.clear();
-    app.sim.pfield.wells.clear();
-    app.sim.packets.clear();
-    app.sim.dt = 0.000025;
+    ui::presets::load_central_well_scene(app.sim);
     selection_clear(app);
-
-
-    sim::RadialWell well;
-    well.cx = 0.5; well.cy = 0.5;
-    well.strength = -260.0;
-    well.radius = 0.075;
-    well.profile = sim::RadialWell::Profile::Gaussian;
-    app.sim.pfield.wells.push_back(well);
-    app.sim.pfield.build(app.sim.V);
-
-    sim::Packet orbit1{0.35, 0.5, 0.035, 0.85, 0.0, 14.0};
-    sim::Packet orbit2{0.65, 0.5, 0.035, 0.85, 0.0, -14.0};
-    app.sim.packets.push_back(orbit1);
-    app.sim.packets.push_back(orbit2);
-    app.sim.reset();
+    app.fieldDirty = true;
 }
 
 static void load_central_well_2_scene(AppState& app) {
-    app.sim.running = false;
-    app.sim.pfield.boxes.clear();
-    app.sim.pfield.wells.clear();
-    app.sim.packets.clear();
-    app.sim.dt = 0.000025;
+    ui::presets::load_central_well_2_scene(app.sim);
     selection_clear(app);
-
-
-    sim::RadialWell well;
-    well.cx = 0.5; well.cy = 0.5;
-    well.strength = -500.0;
-    well.radius = 0.075;
-    well.profile = sim::RadialWell::Profile::InverseSquare;
-    app.sim.pfield.wells.push_back(well);
-    app.sim.pfield.build(app.sim.V);
-
-    sim::Packet orbit1{0.175, 0.5, 0.035, 0.85, 65.0, 25.0};
-    app.sim.packets.push_back(orbit1);
-    app.sim.reset();
+    app.fieldDirty = true;
 }
 
 static void load_central_well_3_scene(AppState& app) {
-    app.sim.running = false;
-    app.sim.pfield.boxes.clear();
-    app.sim.pfield.wells.clear();
-    app.sim.packets.clear();
-    app.sim.dt = 0.000025;
+    ui::presets::load_central_well_3_scene(app.sim);
     selection_clear(app);
-
-
-    sim::RadialWell well;
-    well.cx = 0.5; well.cy = 0.5;
-    well.strength = -4000.0;
-    well.radius = 0.18;
-    well.profile = sim::RadialWell::Profile::HarmonicOscillator;
-    app.sim.pfield.wells.push_back(well);
-    app.sim.pfield.build(app.sim.V);
-
-    sim::Packet orbit1{0.425, 0.5, 0.035, 0.85, 15.0, 0.0};
-    app.sim.packets.push_back(orbit1);
-    app.sim.reset();
+    app.fieldDirty = true;
 }
 
 static void load_well_lattice_scene(AppState& app) {
-    app.sim.running = false;
-    app.sim.pfield.boxes.clear();
-    app.sim.pfield.wells.clear();
-    app.sim.packets.clear();
-    app.sim.dt = 0.00002;
+    ui::presets::load_well_lattice_scene(app.sim);
     selection_clear(app);
-
-
-    const int cols = 5;
-    const int rows = 4;
-    const double startX = 0.18;
-    const double startY = 0.2;
-    const double gapX = 0.14;
-    const double gapY = 0.16;
-    for (int j = 0; j < rows; ++j) {
-        for (int i = 0; i < cols; ++i) {
-            sim::RadialWell w;
-            w.cx = startX + i * gapX;
-            w.cy = startY + j * gapY;
-            w.radius = 0.05;
-            bool attractive = ((i + j) % 2) == 0;
-            w.strength = attractive ? -320.0 : 320.0;
-            w.profile = attractive ? sim::RadialWell::Profile::SoftCoulomb : sim::RadialWell::Profile::Gaussian;
-            app.sim.pfield.wells.push_back(w);
-        }
-    }
-    app.sim.pfield.build(app.sim.V);
-
-    sim::Packet beamA{0.08, 0.25, 0.03, 0.85, 60.0, 2.0};
-    sim::Packet beamB{0.08, 0.75, 0.03, 0.85, 55.0, -2.0};
-    app.sim.packets.push_back(beamA);
-    app.sim.packets.push_back(beamB);
-    app.sim.reset();
+    app.fieldDirty = true;
 }
 
 static void load_ring_resonator_scene(AppState& app) {
-    app.sim.running = false;
-    app.sim.pfield.boxes.clear();
-    app.sim.pfield.wells.clear();
-    app.sim.packets.clear();
-    app.sim.dt = 0.00002;
+    ui::presets::load_ring_resonator_scene(app.sim);
     selection_clear(app);
-
-
-    const int segments = 12;
-    const double tau = 6.28318530717958647692;
-    for (int i = 0; i < segments; ++i) {
-        double angle = (tau / segments) * i;
-        sim::RadialWell wall;
-        wall.cx = 0.5 + 0.28 * std::cos(angle);
-        wall.cy = 0.5 + 0.28 * std::sin(angle);
-        wall.radius = 0.045;
-        wall.strength = 900.0;
-        wall.profile = sim::RadialWell::Profile::Gaussian;
-        app.sim.pfield.wells.push_back(wall);
-    }
-    sim::RadialWell core;
-    core.cx = 0.5;
-    core.cy = 0.5;
-    core.radius = 0.07;
-    core.strength = -450.0;
-    core.profile = sim::RadialWell::Profile::HarmonicOscillator;
-    app.sim.pfield.wells.push_back(core);
-
-    app.sim.pfield.build(app.sim.V);
-
-    sim::Packet runner1{0.35, 0.5, 0.035, 0.8, 0.0, 24.0};
-    sim::Packet runner2{0.65, 0.5, 0.035, 0.8, 0.0, -24.0};
-    sim::Packet runner3{0.5, 0.65, 0.03, 0.6, -18.0, 0.0};
-    app.sim.packets.push_back(runner1);
-    app.sim.packets.push_back(runner2);
-    app.sim.packets.push_back(runner3);
-    app.sim.reset();
+    app.fieldDirty = true;
 }
 
 static void load_barrier_gauntlet_scene(AppState& app) {
-    app.sim.running = false;
-    app.sim.pfield.boxes.clear();
-    app.sim.pfield.wells.clear();
-    app.sim.packets.clear();
-    app.sim.dt = 0.00002;
+    ui::presets::load_barrier_gauntlet_scene(app.sim);
     selection_clear(app);
-
-
-    app.sim.pfield.boxes.push_back(sim::Box{0.12, 0.1, 0.88, 0.18, 3400.0});
-    app.sim.pfield.boxes.push_back(sim::Box{0.12, 0.82, 0.88, 0.9, 3400.0});
-    app.sim.pfield.boxes.push_back(sim::Box{0.12, 0.28, 0.32, 0.72, 3400.0});
-    app.sim.pfield.boxes.push_back(sim::Box{0.68, 0.28, 0.88, 0.72, 3400.0});
-    app.sim.pfield.boxes.push_back(sim::Box{0.44, 0.44, 0.56, 0.56, 4200.0});
-
-    for (int i = 0; i < 3; ++i) {
-        sim::RadialWell sink;
-        sink.cx = 0.35 + 0.15 * i;
-        sink.cy = (i % 2 == 0) ? 0.3 : 0.7;
-        sink.radius = 0.06;
-        sink.strength = -380.0;
-        sink.profile = sim::RadialWell::Profile::InverseSquare;
-        app.sim.pfield.wells.push_back(sink);
-    }
-    sim::RadialWell exit;
-    exit.cx = 0.85;
-    exit.cy = 0.5;
-    exit.radius = 0.07;
-    exit.strength = -520.0;
-    exit.profile = sim::RadialWell::Profile::SoftCoulomb;
-    app.sim.pfield.wells.push_back(exit);
-
-    app.sim.pfield.build(app.sim.V);
-
-    sim::Packet beam{0.18, 0.5, 0.035, 0.9, 48.0, 0.0};
-    sim::Packet probe{0.22, 0.35, 0.025, 0.7, 60.0, 12.0};
-    app.sim.packets.push_back(beam);
-    app.sim.packets.push_back(probe);
-    app.sim.reset();
+    app.fieldDirty = true;
 }
 
 static std::filesystem::path default_screenshot_path() {
@@ -1013,22 +785,35 @@ static void draw_settings(AppState& app) {
         app.sim.running = !app.sim.running;
     }
     ImGui::SameLine();
-    if (ImGui::Button("Step")) app.sim.step();
+    if (ImGui::Button("Step")) {
+        app.sim.step();
+        app.fieldDirty = true;
+    }
     //Line
-    if (ImGui::Button("Reset [R]")) app.sim.reset();
+    if (ImGui::Button("Reset [R]")) {
+        app.sim.reset();
+        app.fieldDirty = true;
+    }
     ImGui::SameLine();
     if (ImGui::Button("Renormalize")) {
         double m = app.sim.mass();
         if (m > 1e-12) {
             double s = 1.0 / std::sqrt(m);
             for (auto& z : app.sim.psi) z *= s;
+            app.sim.refresh_diagnostics_baseline();
+            app.fieldDirty = true;
         }
     }
 
     ImGui::PopStyleVar(2);
     {
         double dt_min = 1e-5, dt_max = 5e-3;
-        ImGui::SliderScalar("dt", ImGuiDataType_Double, &app.sim.dt, &dt_min, &dt_max, "%.6f", ImGuiSliderFlags_Logarithmic);
+        slider_block("dt", "##dt", ImGuiDataType_Double, &app.sim.dt, &dt_min, &dt_max, "%.6f", ImGuiSliderFlags_Logarithmic,
+                     "Time step. Larger values run faster but reduce accuracy.");
+        int spfMin = 1;
+        int spfMax = 32;
+        slider_block("Steps / frame", "##steps_per_frame", ImGuiDataType_S32, &app.stepsPerFrame, &spfMin, &spfMax, "%d", 0,
+                     "How many simulation steps run each frame while playing.");
     }
     const int originalNx = app.sim.Nx;
     const int originalNy = app.sim.Ny;
@@ -1037,17 +822,23 @@ static void draw_settings(AppState& app) {
     const auto clampGrid = [](int v) { return std::clamp(v, 16, 1024); };
 
     bool nxValueChanged = ImGui::InputInt("Nx", &nx);
+    ImGui::SameLine();
+    help_marker("Grid width. Higher values improve detail and increase CPU cost.");
     bool nxActive = ImGui::IsItemActive();
     if (nxActive) app.lastEdited = AppState::LastEdited::Nx;
     nx = clampGrid(nx);
 
     int ny = originalNy;
     bool nyValueChanged = ImGui::InputInt("Ny", &ny);
+    ImGui::SameLine();
+    help_marker("Grid height. Keep aspect lock enabled for square cells.");
     bool nyActive = ImGui::IsItemActive();
     if (nyActive) app.lastEdited = AppState::LastEdited::Ny;
     ny = clampGrid(ny);
 
     bool lockToggled = ImGui::Checkbox("Lock aspect", &app.lockAspect);
+    ImGui::SameLine();
+    help_marker("Keep Nx/Ny aligned to the viewport aspect ratio.");
 
     double aspect = (app.viewportAspect > 1e-6)
                         ? app.viewportAspect
@@ -1124,22 +915,32 @@ static void draw_settings(AppState& app) {
     if (nx != app.sim.Nx || ny != app.sim.Ny) {
         app.sim.resize(nx, ny);
         selection_clear(app);
+        app.fieldDirty = true;
     }
 
-    double mass = app.sim.mass();
-    double left = 0.0, right = 0.0;
-    app.sim.mass_split(left, right);
-    ImGui::Text("Mass: %.6f", mass);
-    ImGui::Text("Left: %.6f  Right: %.6f", left, right);
+    const auto& diag = app.sim.diagnostics;
+    ImGui::Text("Mass: %.6f", diag.current_mass);
+    ImGui::Text("Left: %.6f  Right: %.6f", diag.left_mass, diag.right_mass);
+    ImGui::Text("Interior mass: %.6f  Drift: %.3g", diag.current_interior_mass, diag.rel_interior_mass_drift);
+    if (diag.unstable) {
+        ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "Instability detected: %s", diag.reason.c_str());
+    } else {
+        ImGui::TextColored(ImVec4(0.35f, 0.9f, 0.5f, 1.0f), "Stability: OK");
+    }
     ImGui::Separator();
 
     ImGui::Text("View");
-    ImGui::Checkbox("Normalize view", &app.normalizeView);
-    ImGui::Checkbox("Potential overlay", &app.showPotential);
+    if (ImGui::Checkbox("Normalize view", &app.normalizeView)) app.fieldDirty = true;
+    ImGui::SameLine();
+    help_marker("Scale color mapping to current |psi| max.");
+    if (ImGui::Checkbox("Potential overlay", &app.showPotential)) app.fieldDirty = true;
+    ImGui::SameLine();
+    help_marker("Overlay positive/negative potential tint.");
     int vm = static_cast<int>(app.view);
     const char* modes[] = {"Mag+Phase","Real","Imag","Magnitude","Phase"};
     if (ImGui::Combo("Mode", &vm, modes, IM_ARRAYSIZE(modes))) {
         app.view = static_cast<sim::ViewMode>(vm);
+        app.fieldDirty = true;
     }
     ImGui::Separator();
 
@@ -1151,22 +952,22 @@ static void draw_settings(AppState& app) {
     if (ImGui::CollapsingHeader("Placement Defaults")) {
         ImGui::TextUnformatted("Gaussian packet");
         double vmin, vmax;
-        vmin = 0.1;  vmax = 5.0;  ImGui::SliderScalar("Amplitude", ImGuiDataType_Double, &app.packetAmplitude, &vmin, &vmax, "%.3f");
-        vmin = 0.01; vmax = 0.2;  ImGui::SliderScalar("Sigma", ImGuiDataType_Double, &app.packetSigma, &vmin, &vmax, "%.3f");
-        vmin = -80.0; vmax = 80.0; ImGui::SliderScalar("k_x", ImGuiDataType_Double, &app.packetKx, &vmin, &vmax, "%.1f");
-        vmin = -80.0; vmax = 80.0; ImGui::SliderScalar("k_y", ImGuiDataType_Double, &app.packetKy, &vmin, &vmax, "%.1f");
+        vmin = 0.1;  vmax = 5.0;  slider_block("Amplitude", "##packet_amplitude", ImGuiDataType_Double, &app.packetAmplitude, &vmin, &vmax, "%.3f");
+        vmin = 0.01; vmax = 0.2;  slider_block("Sigma", "##packet_sigma", ImGuiDataType_Double, &app.packetSigma, &vmin, &vmax, "%.3f");
+        vmin = -80.0; vmax = 80.0; slider_block("k_x", "##packet_kx", ImGuiDataType_Double, &app.packetKx, &vmin, &vmax, "%.1f");
+        vmin = -80.0; vmax = 80.0; slider_block("k_y", "##packet_ky", ImGuiDataType_Double, &app.packetKy, &vmin, &vmax, "%.1f");
 
         ImGui::Separator();
         ImGui::TextUnformatted("New box");
         vmin = -4000.0; vmax = 4000.0;
-        ImGui::SliderScalar("Height", ImGuiDataType_Double, &app.boxHeight, &vmin, &vmax, "%.1f");
+        slider_block("Height", "##box_height", ImGuiDataType_Double, &app.boxHeight, &vmin, &vmax, "%.1f");
 
         ImGui::Separator();
         ImGui::TextUnformatted("New radial well");
         vmin = -4000.0; vmax = 4000.0;
-        ImGui::SliderScalar("Strength", ImGuiDataType_Double, &app.wellStrength, &vmin, &vmax, "%.1f");
+        slider_block("Strength", "##well_strength", ImGuiDataType_Double, &app.wellStrength, &vmin, &vmax, "%.1f");
         vmin = 0.01; vmax = 0.5;
-        ImGui::SliderScalar("Radius", ImGuiDataType_Double, &app.wellRadius, &vmin, &vmax, "%.3f");
+        slider_block("Radius", "##well_radius", ImGuiDataType_Double, &app.wellRadius, &vmin, &vmax, "%.3f");
         const char* profiles[] = {"Gaussian", "Soft Coulomb", "Inverse Square", "Harmonic Oscillator"};
         int profileIdx = static_cast<int>(app.wellProfile);
         if (ImGui::Combo("Profile", &profileIdx, profiles, IM_ARRAYSIZE(profiles))) {
@@ -1178,11 +979,15 @@ static void draw_settings(AppState& app) {
 
     if (ImGui::CollapsingHeader("Potential Field", ImGuiTreeNodeFlags_DefaultOpen)) {
         double vmin = 0.0, vmax = 5.0;
-        bool changed = ImGui::SliderScalar("CAP strength", ImGuiDataType_Double, &app.sim.pfield.cap_strength, &vmin, &vmax, "%.2f");
+        bool changed = slider_block("CAP strength", "##cap_strength", ImGuiDataType_Double, &app.sim.pfield.cap_strength, &vmin, &vmax, "%.2f",
+                                   0, "Absorption gain near boundaries.");
         vmin = 0.02; vmax = 0.25;
-        changed |= ImGui::SliderScalar("CAP ratio", ImGuiDataType_Double, &app.sim.pfield.cap_ratio, &vmin, &vmax, "%.3f");
+        changed |= slider_block("CAP ratio", "##cap_ratio", ImGuiDataType_Double, &app.sim.pfield.cap_ratio, &vmin, &vmax, "%.3f",
+                                0, "Fraction of each edge used as CAP sponge.");
         if (changed) {
             app.sim.pfield.build(app.sim.V);
+            app.sim.refresh_diagnostics_baseline();
+            app.fieldDirty = true;
         }
         ImGui::Text("%d box(es)", static_cast<int>(app.sim.pfield.boxes.size()));
         ImGui::Text("%d well(s)", static_cast<int>(app.sim.pfield.wells.size()));
@@ -1190,18 +995,44 @@ static void draw_settings(AppState& app) {
             app.sim.pfield.boxes.clear();
             app.sim.reset();
             selection_clear(app);
+            app.fieldDirty = true;
         }
 
         ImGui::SameLine();
         if (ImGui::Button("Rebuild V & Reset")) {
             app.sim.reset();
+            app.fieldDirty = true;
         }
         if (ImGui::Button("Clear wells")) {
             app.sim.pfield.wells.clear();
             app.sim.reset();
             selection_clear(app);
+            app.fieldDirty = true;
         }
 
+    }
+
+    if (ImGui::CollapsingHeader("Stability Guard", ImGuiTreeNodeFlags_DefaultOpen)) {
+        double driftMin = 1e-4;
+        double driftMax = 0.25;
+        slider_block("Mass drift tolerance", "##mass_drift_tol", ImGuiDataType_Double,
+                     &app.sim.stability.rel_mass_drift_tol, &driftMin, &driftMax, "%.4f", ImGuiSliderFlags_Logarithmic,
+                     "Relative total-mass drift allowed before warning.");
+        slider_block("Interior drift tolerance", "##interior_drift_tol", ImGuiDataType_Double,
+                     &app.sim.stability.rel_interior_mass_drift_tol, &driftMin, &driftMax, "%.4f", ImGuiSliderFlags_Logarithmic,
+                     "Relative mass drift in the non-CAP interior.");
+        int warmMin = 0;
+        int warmMax = 100;
+        slider_block("Warmup steps", "##stability_warmup", ImGuiDataType_S32,
+                     &app.sim.stability.warmup_steps, &warmMin, &warmMax, "%d",
+                     0, "Initial steps ignored by instability checks.");
+        ImGui::Checkbox("Auto-pause on instability", &app.sim.stability.auto_pause_on_instability);
+        ImGui::SameLine();
+        help_marker("Pause playback when instability is detected.");
+        if (ImGui::Button("Re-baseline diagnostics")) {
+            app.sim.refresh_diagnostics_baseline();
+            app.lastUnstable = false;
+        }
     }
 
     if (ImGui::CollapsingHeader("Simulation Content", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -1210,6 +1041,7 @@ static void draw_settings(AppState& app) {
             app.sim.packets.clear();
             app.sim.reset();
             selection_clear(app);
+            app.fieldDirty = true;
         }
 
     }
@@ -1218,14 +1050,59 @@ static void draw_settings(AppState& app) {
         if (app.sceneLastSaveDir.empty()) app.sceneLastSaveDir = default_scene_dir();
         if (app.sceneLastLoadDir.empty()) app.sceneLastLoadDir = default_scene_dir();
 
+        if (!app.scenePathInit) {
+            const std::string saveDefault = (app.sceneLastSaveDir / "scene.json").string();
+            const std::string loadDefault = (app.sceneLastLoadDir / "scene.json").string();
+            std::snprintf(app.saveScenePath, sizeof(app.saveScenePath), "%s", saveDefault.c_str());
+            std::snprintf(app.loadScenePath, sizeof(app.loadScenePath), "%s", loadDefault.c_str());
+            app.scenePathInit = true;
+        }
+
         ImGui::TextDisabled("Save folder: %s", app.sceneLastSaveDir.string().c_str());
         ImGui::TextDisabled("Load folder: %s", app.sceneLastLoadDir.string().c_str());
+
+        ImGui::TextUnformatted("Save path");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::InputText("##save_scene_path", app.saveScenePath, IM_ARRAYSIZE(app.saveScenePath));
+        ImGui::TextUnformatted("Load path");
+        ImGui::SetNextItemWidth(-1.0f);
+        ImGui::InputText("##load_scene_path", app.loadScenePath, IM_ARRAYSIZE(app.loadScenePath));
+
+        if (ImGui::Button("Save")) {
+            const std::filesystem::path p(app.saveScenePath);
+            io::Scene scene;
+            io::from_simulation(app.sim, scene);
+            if (io::save_scene(p.string(), scene)) {
+                app.sceneLastSaveDir = p.parent_path();
+                push_toast(app, std::string("Saved scene to ") + p.string(), 2.5f);
+            } else {
+                push_toast(app, std::string("Failed to save scene to ") + p.string(), 3.0f);
+            }
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Load")) {
+            const std::filesystem::path p(app.loadScenePath);
+            io::Scene scene;
+            if (io::load_scene(p.string(), scene)) {
+                io::to_simulation(scene, app.sim);
+                app.sceneLastLoadDir = p.parent_path();
+                selection_clear(app);
+                app.fieldDirty = true;
+                push_toast(app, std::string("Loaded scene from ") + p.string(), 2.5f);
+            } else {
+                push_toast(app, std::string("Failed to load scene: ") + p.string(), 3.0f);
+            }
+        }
+
+        ImGui::Spacing();
+        ImGui::TextDisabled("Optional native dialogs:");
 
         if (ImGui::Button("Save...")) {
 #ifdef _WIN32
             std::string chosen = save_json_file_dialog(app.sceneLastSaveDir, "scene.json");
             if (!chosen.empty()) {
                 std::filesystem::path p(chosen);
+                std::snprintf(app.saveScenePath, sizeof(app.saveScenePath), "%s", p.string().c_str());
                 app.sceneLastSaveDir = p.parent_path();
                 io::Scene scene;
                 io::from_simulation(app.sim, scene);
@@ -1245,18 +1122,20 @@ static void draw_settings(AppState& app) {
             std::string chosen = open_json_file_dialog(app.sceneLastLoadDir);
             if (!chosen.empty()) {
                 std::filesystem::path p(chosen);
+                std::snprintf(app.loadScenePath, sizeof(app.loadScenePath), "%s", p.string().c_str());
                 app.sceneLastLoadDir = p.parent_path();
                 io::Scene scene;
                 if (io::load_scene(p.string(), scene)) {
                     io::to_simulation(scene, app.sim);
                     selection_clear(app);
+                    app.fieldDirty = true;
                     push_toast(app, std::string("Loaded scene from ") + p.string(), 2.5f);
                 } else {
                     push_toast(app, std::string("Failed to load scene: ") + p.string(), 3.0f);
                 }
             }
 #else
-            push_toast(app, "File dialog not available on this platform", 3.0f);
+            push_toast(app, "Native file dialog unavailable; use path fields above", 3.0f);
 #endif
         }
     }
@@ -1344,7 +1223,7 @@ static void draw_tools_panel(AppState& app) {
     ImGui::PopStyleVar(2);
 
     ImGui::Separator();
-    if (ImGui::CollapsingHeader("Eigenstates"), ImGuiTreeNodeFlags_DefaultOpen) {
+    if (ImGui::CollapsingHeader("Eigenstates", ImGuiTreeNodeFlags_DefaultOpen)) {
         ImGui::BeginDisabled();
         ImGui::TextWrapped("Solves lowest modes of H = -(1/2)∇² + Re(V)");
         ImGui::EndDisabled();
@@ -1389,6 +1268,7 @@ static void draw_tools_panel(AppState& app) {
                     app.eigen.selected = i;
                     if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
                         app.sim.apply_eigenstate(app.eigen.states[i]);
+                        app.fieldDirty = true;
                     }
                 }
                 ImGui::SameLine();
@@ -1396,6 +1276,7 @@ static void draw_tools_panel(AppState& app) {
                 if (ImGui::Button("Load")) {
                     app.sim.apply_eigenstate(app.eigen.states[i]);
                     app.eigen.selected = i;
+                    app.fieldDirty = true;
                     push_toast(app, "Eigenstate loaded", 2.5f);
                 }
                 ImGui::PopID();
@@ -1409,12 +1290,18 @@ static void draw_view_content(AppState& app) {
     ImVec2 target = fit_size_keep_aspect(ImVec2((float)app.sim.Lx, (float)app.sim.Ly), avail);
     ImVec2 cur = ImGui::GetCursorScreenPos();
 
-    std::vector<unsigned char> rgba;
-    render_field_to_rgba(app.sim, rgba, app.showPotential, app.view, app.normalizeView);
+    const bool texSizeChanged = (app.texW != app.sim.Nx || app.texH != app.sim.Ny);
+    const bool needUpload = texSizeChanged || app.fieldDirty || app.rgbaBuffer.empty();
+    if (needUpload) {
+        render_field_to_rgba(app.sim, app.rgbaBuffer, app.showPotential, app.view, app.normalizeView);
+        app.fieldDirty = false;
+    }
     ensure_texture(app, app.sim.Nx, app.sim.Ny);
-    glBindTexture(GL_TEXTURE_2D, app.tex);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, app.sim.Nx, app.sim.Ny, GL_RGBA, GL_UNSIGNED_BYTE, rgba.data());
-    glBindTexture(GL_TEXTURE_2D, 0);
+    if (needUpload) {
+        glBindTexture(GL_TEXTURE_2D, app.tex);
+        glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, app.sim.Nx, app.sim.Ny, GL_RGBA, GL_UNSIGNED_BYTE, app.rgbaBuffer.data());
+        glBindTexture(GL_TEXTURE_2D, 0);
+    }
 
     ImGui::Image((void*)(intptr_t)app.tex, target);
 
@@ -1646,6 +1533,7 @@ static void draw_view_content(AppState& app) {
         app.dragPrimaryIdx = -1;
         app.pendingShiftToggle = false;
         app.pendingShiftToggleIdx = -1;
+        app.potentialDirtyDrag = false;
 
         const bool shift = io.KeyShift;
 
@@ -1860,8 +1748,9 @@ static void draw_view_content(AppState& app) {
             }
 
             app.dragStart = app.dragEnd;
-            if (rebuildPotential) app.sim.pfield.build(app.sim.V);
+            if (rebuildPotential) app.potentialDirtyDrag = true;
             if (packetMoved) app.selectionDragDirty = true;
+            if (rebuildPotential || packetMoved) app.fieldDirty = true;
         } else if (app.dragAction == AppState::DragAction::AdjustBoxEdge) {
             if (app.dragPrimaryIdx >= 0 && app.dragPrimaryIdx < (int)app.sim.pfield.boxes.size()) {
                 ImVec2 uv0 = screen_to_uv(app.dragStart, tl, br);
@@ -1871,7 +1760,8 @@ static void draw_view_content(AppState& app) {
                 auto& b = app.sim.pfield.boxes[app.dragPrimaryIdx];
                 box_apply_edge_drag(b, app.dragBoxEdge, d.x, d.y);
                 app.dragStart = app.dragEnd;
-                app.sim.pfield.build(app.sim.V);
+                app.potentialDirtyDrag = true;
+                app.fieldDirty = true;
             }
         } else if (app.dragAction == AppState::DragAction::AdjustPacketMomentum) {
             if (app.activeDragPacket >= 0 && app.activeDragPacket < static_cast<int>(app.sim.packets.size())) {
@@ -1882,6 +1772,7 @@ static void draw_view_content(AppState& app) {
                 pkt.kx = deltaUV.x / kMomentumUVScale;
                 pkt.ky = deltaUV.y / kMomentumUVScale;
                 app.packetDragDirty = true;
+                app.fieldDirty = true;
             }
         } else if (app.dragAction == AppState::DragAction::AddBox || app.dragAction == AppState::DragAction::AddPacket) {
             // draw-only below
@@ -1922,6 +1813,7 @@ static void draw_view_content(AppState& app) {
             selection_set_single(app, AppState::SelectedItem::Kind::Box, newIndex);
             app.boxEditorOpen = true;
             app.boxEditorPos = io.MousePos + ImVec2(16, 16);
+            app.fieldDirty = true;
         } else if (app.dragAction == AppState::DragAction::AddPacket) {
             ImVec2 uv_center = screen_to_uv(app.dragStart, tl, br);
             ImVec2 uv_release = screen_to_uv(app.dragEnd, tl, br);
@@ -1944,6 +1836,7 @@ static void draw_view_content(AppState& app) {
             selection_set_single(app, AppState::SelectedItem::Kind::Packet, static_cast<int>(app.sim.packets.size()) - 1);
             app.packetEditorOpen = true;
             app.packetEditorPos = io.MousePos + ImVec2(16, 16);
+            app.fieldDirty = true;
         } else if (app.dragAction == AppState::DragAction::AddWell) {
             ImVec2 uv_center = screen_to_uv(app.dragEnd, tl, br);
             sim::RadialWell w;
@@ -1956,8 +1849,12 @@ static void draw_view_content(AppState& app) {
             selection_set_single(app, AppState::SelectedItem::Kind::Well, static_cast<int>(app.sim.pfield.wells.size()) - 1);
             app.wellEditorOpen = true;
             app.wellEditorPos = io.MousePos + ImVec2(16, 16);
+            app.fieldDirty = true;
         } else if (app.dragAction == AppState::DragAction::AdjustPacketMomentum) {
-            if (app.packetDragDirty) app.sim.reset();
+            if (app.packetDragDirty) {
+                app.sim.reset();
+                app.fieldDirty = true;
+            }
         } else if (app.dragAction == AppState::DragAction::MoveSelection) {
             if (app.pendingPacketClick && app.dragPrimaryKind == AppState::SelectedItem::Kind::Packet) {
                 selection_set_single(app, AppState::SelectedItem::Kind::Packet, app.dragPrimaryIdx);
@@ -1965,9 +1862,17 @@ static void draw_view_content(AppState& app) {
                 app.packetEditorPos = io.MousePos + ImVec2(16, 16);
             } else if (app.selectionDragDirty) {
                 app.sim.reset();
+                app.fieldDirty = true;
             }
         } else if (app.dragAction == AppState::DragAction::AdjustBoxEdge) {
             // potential already rebuilt during drag
+        }
+
+        if (app.potentialDirtyDrag) {
+            app.sim.pfield.build(app.sim.V);
+            app.sim.refresh_diagnostics_baseline();
+            app.potentialDirtyDrag = false;
+            app.fieldDirty = true;
         }
 
         app.dragAction = AppState::DragAction::None;
@@ -1980,6 +1885,7 @@ static void draw_view_content(AppState& app) {
         app.dragPrimaryIdx = -1;
         app.pendingShiftToggle = false;
         app.pendingShiftToggleIdx = -1;
+        app.potentialDirtyDrag = false;
     }
 
 
@@ -1999,18 +1905,23 @@ static void draw_view_content(AppState& app) {
 
     if (!ImGui::GetIO().WantCaptureKeyboard) {
         if (ImGui::IsKeyPressed(ImGuiKey_Space)) app.sim.running = !app.sim.running;
-        if (ImGui::IsKeyPressed(ImGuiKey_R)) app.sim.reset();
+        if (ImGui::IsKeyPressed(ImGuiKey_R)) {
+            app.sim.reset();
+            app.fieldDirty = true;
+        }
         if (ImGui::IsKeyPressed(ImGuiKey_Delete)) {
             // Delete single-object selection (keep existing behavior)
             if (app.selectedBox >= 0) {
                 app.sim.pfield.boxes.erase(app.sim.pfield.boxes.begin() + app.selectedBox);
                 selection_clear(app);
                 app.sim.reset();
+                app.fieldDirty = true;
             } else if (app.selectedWell >= 0) {
                 if (app.selectedWell < static_cast<int>(app.sim.pfield.wells.size())) {
                     app.sim.pfield.wells.erase(app.sim.pfield.wells.begin() + app.selectedWell);
                     selection_clear(app);
                     app.sim.reset();
+                    app.fieldDirty = true;
                 }
             }
         }
@@ -2050,12 +1961,15 @@ static void draw_object_editors(AppState& app) {
                 }
                 if (rebuild) {
                     app.sim.pfield.build(app.sim.V);
+                    app.sim.refresh_diagnostics_baseline();
+                    app.fieldDirty = true;
                 }
                 if (ImGui::Button("Delete box")) {
                     app.sim.pfield.boxes.erase(app.sim.pfield.boxes.begin() + app.selectedBox);
                     app.selectedBox = -1;
                     app.boxEditorOpen = false;
                     app.sim.reset();
+                    app.fieldDirty = true;
                     open = false;
                 }
                 ImGui::SameLine();
@@ -2097,9 +2011,11 @@ static void draw_object_editors(AppState& app) {
                 if (ImGui::SliderScalar("k_y", ImGuiDataType_Double, &p.ky, &kMin, &kMax, "%.1f")) changed = true;
                 if (changed) {
                     app.sim.reset();
+                    app.fieldDirty = true;
                 }
                 if (ImGui::Button("Re-inject")) {
                     app.sim.reset();
+                    app.fieldDirty = true;
                 }
                 ImGui::SameLine();
                 if (ImGui::Button("Delete packet")) {
@@ -2107,6 +2023,7 @@ static void draw_object_editors(AppState& app) {
                     app.selectedPacket = -1;
                     app.packetEditorOpen = false;
                     app.sim.reset();
+                    app.fieldDirty = true;
                     open = false;
                 }
                 ImGui::SameLine();
@@ -2164,12 +2081,15 @@ static void draw_object_editors(AppState& app) {
                 }
                 if (rebuild) {
                     app.sim.pfield.build(app.sim.V);
+                    app.sim.refresh_diagnostics_baseline();
+                    app.fieldDirty = true;
                 }
                 if (ImGui::Button("Delete well")) {
                     app.sim.pfield.wells.erase(app.sim.pfield.wells.begin() + app.selectedWell);
                     app.selectedWell = -1;
                     app.wellEditorOpen = false;
                     app.sim.reset();
+                    app.fieldDirty = true;
                     open = false;
                 }
                 ImGui::SameLine();
@@ -2191,19 +2111,26 @@ static void draw_style_editor(AppState& app) {
         return;
     ImGui::SetNextWindowSize(ImVec2(420.0f, 0.0f), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("Style Editor", &app.showStyleEditor)) {
-        ImGuiStyle& style = ImGui::GetStyle();
-        ImGui::SliderFloat("Window Rounding", &style.WindowRounding, 0.0f, 20.0f, "%.1f");
-        ImGui::SliderFloat("Frame Rounding", &style.FrameRounding, 0.0f, 20.0f, "%.1f");
-        ImGui::SliderFloat("Grab Rounding", &style.GrabRounding, 0.0f, 20.0f, "%.1f");
-        ImGui::SliderFloat("Window Border Size", &style.WindowBorderSize, 0.0f, 4.0f, "%.1f");
-        ImGui::SliderFloat("Frame Border Size", &style.FrameBorderSize, 0.0f, 4.0f, "%.1f");
-        ImGui::Checkbox("Anti-aliased lines", &style.AntiAliasedLines);
-        ImGui::Checkbox("Anti-aliased fill", &style.AntiAliasedFill);
-        ImGui::Separator();
-        ImGui::ColorEdit3("Window BG", &style.Colors[ImGuiCol_WindowBg].x);
-        ImGui::ColorEdit3("Header", &style.Colors[ImGuiCol_Header].x);
-        ImGui::ColorEdit3("Button", &style.Colors[ImGuiCol_Button].x);
-        ImGui::ColorEdit3("Accent", &style.Colors[ImGuiCol_PlotLines].x);
+        auto& t = app.styleTokens;
+        bool changed = false;
+        changed |= ImGui::SliderFloat("Corner rounding", &t.cornerRounding, 0.0f, 14.0f, "%.1f");
+        changed |= ImGui::SliderFloat("Border weight", &t.borderWeight, 0.0f, 3.0f, "%.2f");
+        changed |= ImGui::SliderFloat("Density", &t.density, 0.75f, 1.4f, "%.2f");
+        changed |= ImGui::SliderFloat("Font scale", &t.fontScale, 0.85f, 1.35f, "%.2f");
+        changed |= ImGui::SliderFloat("Accent hue", &t.accentHue, 0.0f, 1.0f, "%.2f");
+        changed |= ImGui::SliderFloat("Accent saturation", &t.accentSat, 0.2f, 1.0f, "%.2f");
+        changed |= ImGui::SliderFloat("Accent value", &t.accentVal, 0.3f, 1.0f, "%.2f");
+        changed |= ImGui::SliderFloat("Panel lift", &t.panelLift, 0.0f, 0.18f, "%.2f");
+        changed |= ImGui::Checkbox("Anti-aliasing", &t.antiAliased);
+
+        if (ImGui::Button("Reset style tokens")) {
+            t = AppState::StyleTokens{};
+            changed = true;
+        }
+
+        if (changed) {
+            apply_style_tokens(app);
+        }
     }
     ImGui::End();
 }
@@ -2328,6 +2255,8 @@ static void draw_top_bar(AppState& app, GLFWwindow* window, float& out_height, I
         // Custom preset directly callable like the built-in ones
         if (ImGui::MenuItem("Dashboard Theme")) {
             StyleColorsDashboard();
+            app.styleTokens = AppState::StyleTokens{};
+            apply_style_tokens(app);
         }
         ImGui::Separator();
         if (ImGui::MenuItem("Style Editor...", nullptr, app.showStyleEditor)) {
@@ -2453,6 +2382,7 @@ int run_gui(GLFWwindow* window) {
     ImGui_ImplOpenGL2_Init();
 
     AppState app;
+    apply_style_tokens(app);
     load_default_doubleslit2_scene(app);
 
     // Main loop
@@ -2606,7 +2536,15 @@ int run_gui(GLFWwindow* window) {
         draw_toast_overlay(app);
 
         if (app.sim.running) {
-            app.sim.step();
+            app.sim.stepN(std::max(1, app.stepsPerFrame));
+            app.fieldDirty = true;
+        }
+
+        if (app.sim.diagnostics.unstable && !app.lastUnstable) {
+            push_toast(app, std::string("Instability: ") + app.sim.diagnostics.reason, 4.0f);
+            app.lastUnstable = true;
+        } else if (!app.sim.diagnostics.unstable) {
+            app.lastUnstable = false;
         }
 
         ImGui::Render();

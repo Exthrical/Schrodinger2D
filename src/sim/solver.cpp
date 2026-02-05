@@ -8,11 +8,29 @@ namespace sim {
 
 static inline int idx(int i, int j, int Nx) { return j * Nx + i; }
 
+void CrankNicolsonADI::ensure_workspace(int Nx, int Ny) {
+    if (cachedNx == Nx && cachedNy == Ny) {
+        return;
+    }
+    cachedNx = Nx;
+    cachedNy = Ny;
+    phi.assign(static_cast<size_t>(Nx * Ny), cd(0.0, 0.0));
+    a.assign(static_cast<size_t>(Nx), cd(0.0, 0.0));
+    b.assign(static_cast<size_t>(Nx), cd(0.0, 0.0));
+    c.assign(static_cast<size_t>(Nx), cd(0.0, 0.0));
+    d.assign(static_cast<size_t>(Nx), cd(0.0, 0.0));
+    ay_a.assign(static_cast<size_t>(Ny), cd(0.0, 0.0));
+    ay_b.assign(static_cast<size_t>(Ny), cd(0.0, 0.0));
+    ay_c.assign(static_cast<size_t>(Ny), cd(0.0, 0.0));
+    rhs.assign(static_cast<size_t>(Ny), cd(0.0, 0.0));
+}
+
 void CrankNicolsonADI::step(std::vector<std::complex<double>>& psi,
                             int Nx, int Ny, double dx, double dy, double dt,
                             const std::vector<std::complex<double>>& V)
 {
-    using cd = std::complex<double>;
+    ensure_workspace(Nx, Ny);
+
     const cd I(0.0, 1.0);
 
     // Potential half-step: psi <- exp(-i V dt/2) psi
@@ -31,10 +49,7 @@ void CrankNicolsonADI::step(std::vector<std::complex<double>>& psi,
     const cd ay = alpha / (dy * dy);
 
     // Temporary buffer
-    std::vector<cd> phi(psi.size());
-
     // 1) Solve along x: (I - alpha D_x) phi = (I + alpha D_y) psi
-    std::vector<cd> a(Nx), b(Nx), c(Nx), d(Nx);
     for (int j = 0; j < Ny; ++j) {
         // Build RHS: (I + ay * D_y) psi
         for (int i = 0; i < Nx; ++i) {
@@ -60,7 +75,6 @@ void CrankNicolsonADI::step(std::vector<std::complex<double>>& psi,
     }
 
     // 2) Solve along y: (I - alpha D_y) psi_new = (I + alpha D_x) phi
-    std::vector<cd> ay_a(Ny), ay_b(Ny), ay_c(Ny), rhs(Ny);
     for (int i = 0; i < Nx; ++i) {
         // RHS: (I + ax * D_x) phi
         for (int j = 0; j < Ny; ++j) {
@@ -92,4 +106,3 @@ void CrankNicolsonADI::step(std::vector<std::complex<double>>& psi,
 }
 
 } // namespace sim
-
