@@ -11,6 +11,8 @@ namespace sim {
 
 enum class ViewMode { MagnitudePhase, Real, Imag, Magnitude, Phase };
 
+enum class StabilityLevel { Ok, Warning, Unstable };
+
 struct EigenState {
     double energy{0.0};
     std::vector<std::complex<double>> psi;
@@ -18,8 +20,13 @@ struct EigenState {
 
 struct StabilityConfig {
     double rel_mass_drift_tol{0.15};
+    double rel_cap_mass_growth_tol{0.01};
     double rel_interior_mass_drift_tol{1.0};
+    double interior_mass_drift_vs_total_tol{0.05};
+    double min_initial_interior_mass_fraction{0.05};
+    double min_interior_area_fraction{0.01};
     int warmup_steps{8};
+    bool interior_drift_hard_fail{false};
     bool auto_pause_on_instability{true};
 };
 
@@ -32,10 +39,18 @@ struct StabilityDiagnostics {
     double right_mass{0.0};
     double rel_mass_drift{0.0};
     double rel_interior_mass_drift{0.0};
+    double rel_interior_mass_drift_vs_total{0.0};
+    double initial_interior_mass_fraction{0.0};
+    double interior_area_fraction{0.0};
     int steps_since_baseline{0};
+    StabilityLevel level{StabilityLevel::Ok};
     bool has_non_finite{false};
+    bool warning{false};
+    bool interior_guard_active{true};
     bool unstable{false};
     std::string reason;
+    std::string warning_reason;
+    std::string interior_guard_reason;
 };
 
 struct Simulation {

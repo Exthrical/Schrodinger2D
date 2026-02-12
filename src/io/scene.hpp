@@ -17,8 +17,13 @@ struct Scene {
     double cap_strength{1.0};
     double cap_ratio{0.1};
     double rel_mass_drift_tol{0.15};
+    double rel_cap_mass_growth_tol{0.01};
     double rel_interior_mass_drift_tol{1.0};
+    double interior_mass_drift_vs_total_tol{0.05};
+    double min_initial_interior_mass_fraction{0.05};
+    double min_interior_area_fraction{0.01};
     int stability_warmup_steps{8};
+    bool interior_drift_hard_fail{false};
     bool auto_pause_on_instability{true};
     std::vector<SceneBox> boxes;
     std::vector<SceneWell> wells;

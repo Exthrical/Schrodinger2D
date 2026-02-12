@@ -5,8 +5,13 @@
   "cap_strength": 1.0,
   "cap_ratio": 0.1,
   "rel_mass_drift_tol": 0.15,
+  "rel_cap_mass_growth_tol": 0.01,
   "rel_interior_mass_drift_tol": 1.0,
+  "interior_mass_drift_vs_total_tol": 0.05,
+  "min_initial_interior_mass_fraction": 0.05,
+  "min_interior_area_fraction": 0.01,
   "stability_warmup_steps": 8,
+  "interior_drift_hard_fail": false,
   "auto_pause_on_instability": true,
   "steps": 600,
   "boxes": [

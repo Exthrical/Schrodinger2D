@@ -13,6 +13,43 @@ static inline bool is_finite_complex(const std::complex<double>& z) {
     return std::isfinite(std::real(z)) && std::isfinite(std::imag(z));
 }
 
+struct InteriorWindow {
+    int i0{0};
+    int i1{0};
+    int j0{0};
+    int j1{0};
+    bool has_interior{false};
+    double area_fraction{0.0};
+};
+
+static InteriorWindow compute_interior_window(int Nx, int Ny, double cap_ratio) {
+    const int wx = std::max(1, static_cast<int>(std::round(cap_ratio * Nx)));
+    const int wy = std::max(1, static_cast<int>(std::round(cap_ratio * Ny)));
+
+    InteriorWindow w;
+    w.i0 = wx;
+    w.i1 = Nx - wx;
+    w.j0 = wy;
+    w.j1 = Ny - wy;
+
+    const int interiorW = w.i1 - w.i0;
+    const int interiorH = w.j1 - w.j0;
+    w.has_interior = interiorW > 0 && interiorH > 0;
+    if (w.has_interior && Nx > 0 && Ny > 0) {
+        w.area_fraction = static_cast<double>(interiorW * interiorH) / static_cast<double>(Nx * Ny);
+    }
+
+    if (!w.has_interior) {
+        w.i0 = 0;
+        w.i1 = Nx;
+        w.j0 = 0;
+        w.j1 = Ny;
+        w.area_fraction = 0.0;
+    }
+
+    return w;
+}
+
 } // namespace
 
 Simulation::Simulation() {
@@ -97,7 +134,10 @@ void Simulation::step() {
 }
 
 void Simulation::stepN(int n) {
-    for (int k = 0; k < n; ++k) step();
+    for (int k = 0; k < n; ++k) {
+        step();
+        if (!running) break;
+    }
 }
 
 double Simulation::mass() const {
@@ -107,23 +147,11 @@ double Simulation::mass() const {
 }
 
 double Simulation::interior_mass() const {
-    const int wx = std::max(1, static_cast<int>(std::round(pfield.cap_ratio * Nx)));
-    const int wy = std::max(1, static_cast<int>(std::round(pfield.cap_ratio * Ny)));
-
-    int i0 = wx;
-    int i1 = Nx - wx;
-    int j0 = wy;
-    int j1 = Ny - wy;
-    if (i1 <= i0 || j1 <= j0) {
-        i0 = 0;
-        i1 = Nx;
-        j0 = 0;
-        j1 = Ny;
-    }
+    const InteriorWindow interior = compute_interior_window(Nx, Ny, pfield.cap_ratio);
 
     double sum = 0.0;
-    for (int j = j0; j < j1; ++j) {
-        for (int i = i0; i < i1; ++i) {
+    for (int j = interior.j0; j < interior.j1; ++j) {
+        for (int i = interior.i0; i < interior.i1; ++i) {
             sum += std::norm(psi[idx(i, j)]);
         }
     }
@@ -140,99 +168,140 @@ void Simulation::refresh_diagnostics_baseline() {
     update_diagnostics(false);
     diagnostics.initial_mass = diagnostics.current_mass;
     diagnostics.initial_interior_mass = diagnostics.current_interior_mass;
+    diagnostics.initial_interior_mass_fraction =
+        diagnostics.initial_mass > 1e-15 ? diagnostics.initial_interior_mass / diagnostics.initial_mass : 0.0;
     diagnostics.rel_mass_drift = 0.0;
     diagnostics.rel_interior_mass_drift = 0.0;
+    diagnostics.rel_interior_mass_drift_vs_total = 0.0;
     diagnostics.steps_since_baseline = 0;
+    diagnostics.level = StabilityLevel::Ok;
+    diagnostics.warning = false;
+    diagnostics.warning_reason.clear();
+    diagnostics.interior_guard_active = true;
+    diagnostics.interior_guard_reason.clear();
     diagnostics.unstable = false;
     diagnostics.reason.clear();
 }
 
 void Simulation::update_diagnostics(bool is_time_step) {
     const int mid = Nx / 2;
-    const int wx = std::max(1, static_cast<int>(std::round(pfield.cap_ratio * Nx)));
-    const int wy = std::max(1, static_cast<int>(std::round(pfield.cap_ratio * Ny)));
-    int i0 = wx;
-    int i1 = Nx - wx;
-    int j0 = wy;
-    int j1 = Ny - wy;
-    if (i1 <= i0 || j1 <= j0) {
-        i0 = 0;
-        i1 = Nx;
-        j0 = 0;
-        j1 = Ny;
-    }
+    const InteriorWindow interiorWindow = compute_interior_window(Nx, Ny, pfield.cap_ratio);
 
     bool finite = true;
     double total = 0.0;
-    double interior = 0.0;
+    double interiorMass = 0.0;
     double left = 0.0;
     double right = 0.0;
     for (int j = 0; j < Ny; ++j) {
-        const bool insideY = (j >= j0 && j < j1);
+        const bool insideY = (j >= interiorWindow.j0 && j < interiorWindow.j1);
         for (int i = 0; i < Nx; ++i) {
             const auto z = psi[idx(i, j)];
             finite = finite && is_finite_complex(z);
             const double w = std::norm(z) * dx * dy;
             total += w;
             if (i < mid) left += w; else right += w;
-            if (insideY && i >= i0 && i < i1) interior += w;
+            if (insideY && i >= interiorWindow.i0 && i < interiorWindow.i1) interiorMass += w;
         }
     }
 
     diagnostics.current_mass = total;
-    diagnostics.current_interior_mass = interior;
+    diagnostics.current_interior_mass = interiorMass;
     diagnostics.left_mass = left;
     diagnostics.right_mass = right;
+    diagnostics.interior_area_fraction = interiorWindow.area_fraction;
     diagnostics.has_non_finite = !finite;
 
     const double massDenom = std::max(1e-15, diagnostics.initial_mass);
     const double interiorDenom = std::max(1e-15, diagnostics.initial_interior_mass);
+    const double interiorDelta = std::fabs(interiorMass - diagnostics.initial_interior_mass);
     diagnostics.rel_mass_drift = std::fabs(total - diagnostics.initial_mass) / massDenom;
-    diagnostics.rel_interior_mass_drift = std::fabs(interior - diagnostics.initial_interior_mass) / interiorDenom;
+    diagnostics.rel_interior_mass_drift = interiorDelta / interiorDenom;
+    diagnostics.rel_interior_mass_drift_vs_total = interiorDelta / massDenom;
+    diagnostics.initial_interior_mass_fraction =
+        diagnostics.initial_mass > 1e-15 ? diagnostics.initial_interior_mass / diagnostics.initial_mass : 0.0;
     if (is_time_step) {
         diagnostics.steps_since_baseline += 1;
     }
 
-    if (diagnostics.unstable) return;
+    diagnostics.warning = false;
+    diagnostics.warning_reason.clear();
+    diagnostics.interior_guard_active = true;
+    diagnostics.interior_guard_reason.clear();
+
+    if (diagnostics.unstable) {
+        diagnostics.level = StabilityLevel::Unstable;
+        return;
+    }
 
     if (!finite) {
         diagnostics.unstable = true;
         diagnostics.reason = "psi contains NaN/Inf";
+        diagnostics.level = StabilityLevel::Unstable;
         return;
     }
 
     if (diagnostics.steps_since_baseline <= std::max(0, stability.warmup_steps)) {
+        diagnostics.level = StabilityLevel::Ok;
         return;
     }
 
     const bool capEnabled = pfield.cap_strength > 1e-12 && pfield.cap_ratio > 0.0;
     const double totalTol = std::max(0.0, stability.rel_mass_drift_tol);
+    const double capGrowthTol = std::max(0.0, stability.rel_cap_mass_growth_tol);
     const double interiorTol = std::max(0.0, stability.rel_interior_mass_drift_tol);
+    const double interiorVsTotalTol = std::max(0.0, stability.interior_mass_drift_vs_total_tol);
 
     if (capEnabled) {
-        const double allowed = diagnostics.initial_mass * (1.0 + totalTol);
+        const double allowed = diagnostics.initial_mass * (1.0 + capGrowthTol);
         if (diagnostics.current_mass > allowed) {
             diagnostics.unstable = true;
             diagnostics.reason = "total mass grew unexpectedly with CAP";
-            return;
-        }
-        if (diagnostics.rel_interior_mass_drift > interiorTol) {
-            diagnostics.unstable = true;
-            diagnostics.reason = "interior mass drift exceeded tolerance";
+            diagnostics.level = StabilityLevel::Unstable;
             return;
         }
     } else {
         if (diagnostics.rel_mass_drift > totalTol) {
             diagnostics.unstable = true;
             diagnostics.reason = "mass drift exceeded tolerance";
-            return;
-        }
-        if (diagnostics.rel_interior_mass_drift > interiorTol) {
-            diagnostics.unstable = true;
-            diagnostics.reason = "interior mass drift exceeded tolerance";
+            diagnostics.level = StabilityLevel::Unstable;
             return;
         }
     }
+
+    if (pfield.cap_ratio >= 0.5) {
+        diagnostics.interior_guard_active = false;
+        diagnostics.interior_guard_reason = "disabled: CAP ratio >= 0.5 leaves no reliable interior";
+    } else if (!interiorWindow.has_interior) {
+        diagnostics.interior_guard_active = false;
+        diagnostics.interior_guard_reason = "disabled: interior region collapsed by CAP size";
+    } else if (diagnostics.interior_area_fraction < std::max(0.0, stability.min_interior_area_fraction)) {
+        diagnostics.interior_guard_active = false;
+        diagnostics.interior_guard_reason = "disabled: interior region too small for robust drift checks";
+    } else if (diagnostics.initial_mass <= 1e-15) {
+        diagnostics.interior_guard_active = false;
+        diagnostics.interior_guard_reason = "disabled: baseline mass is too small";
+    } else if (diagnostics.initial_interior_mass_fraction < std::max(0.0, stability.min_initial_interior_mass_fraction)) {
+        diagnostics.interior_guard_active = false;
+        diagnostics.interior_guard_reason = "disabled: initial interior mass is too small (near-wall initialization)";
+    }
+
+    if (diagnostics.interior_guard_active) {
+        const bool interiorExceeded =
+            diagnostics.rel_interior_mass_drift > interiorTol ||
+            diagnostics.rel_interior_mass_drift_vs_total > interiorVsTotalTol;
+        if (interiorExceeded) {
+            if (stability.interior_drift_hard_fail) {
+                diagnostics.unstable = true;
+                diagnostics.reason = "interior mass drift exceeded tolerance (strict mode)";
+                diagnostics.level = StabilityLevel::Unstable;
+                return;
+            }
+            diagnostics.warning = true;
+            diagnostics.warning_reason = "interior mass drift exceeded tolerance";
+        }
+    }
+
+    diagnostics.level = diagnostics.warning ? StabilityLevel::Warning : StabilityLevel::Ok;
 }
 
 static void tridiagonal_eigen(std::vector<double> diag, std::vector<double> off, std::vector<double>& evals, std::vector<std::vector<double>>& evecs) {

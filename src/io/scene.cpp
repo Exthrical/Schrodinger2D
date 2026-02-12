@@ -20,8 +20,13 @@ bool save_scene(const std::string& path, const Scene& s) {
     f << "  \"cap_strength\": " << s.cap_strength << ",\n";
     f << "  \"cap_ratio\": " << s.cap_ratio << ",\n";
     f << "  \"rel_mass_drift_tol\": " << s.rel_mass_drift_tol << ",\n";
+    f << "  \"rel_cap_mass_growth_tol\": " << s.rel_cap_mass_growth_tol << ",\n";
     f << "  \"rel_interior_mass_drift_tol\": " << s.rel_interior_mass_drift_tol << ",\n";
+    f << "  \"interior_mass_drift_vs_total_tol\": " << s.interior_mass_drift_vs_total_tol << ",\n";
+    f << "  \"min_initial_interior_mass_fraction\": " << s.min_initial_interior_mass_fraction << ",\n";
+    f << "  \"min_interior_area_fraction\": " << s.min_interior_area_fraction << ",\n";
     f << "  \"stability_warmup_steps\": " << s.stability_warmup_steps << ",\n";
+    f << "  \"interior_drift_hard_fail\": " << (s.interior_drift_hard_fail ? "true" : "false") << ",\n";
     f << "  \"auto_pause_on_instability\": " << (s.auto_pause_on_instability ? "true" : "false") << ",\n";
     f << "  \"steps\": " << s.steps << ",\n";
     f << "  \"boxes\": [\n";
@@ -293,8 +298,13 @@ bool load_scene(const std::string& path, Scene& sc) {
     sc.cap_ratio = as_number(get_member(root, "cap_ratio"), sc.cap_ratio);
     sc.steps = as_int(get_member(root, "steps"), sc.steps);
     sc.rel_mass_drift_tol = as_number(get_member(root, "rel_mass_drift_tol"), sc.rel_mass_drift_tol);
+    sc.rel_cap_mass_growth_tol = as_number(get_member(root, "rel_cap_mass_growth_tol"), sc.rel_cap_mass_growth_tol);
     sc.rel_interior_mass_drift_tol = as_number(get_member(root, "rel_interior_mass_drift_tol"), sc.rel_interior_mass_drift_tol);
+    sc.interior_mass_drift_vs_total_tol = as_number(get_member(root, "interior_mass_drift_vs_total_tol"), sc.interior_mass_drift_vs_total_tol);
+    sc.min_initial_interior_mass_fraction = as_number(get_member(root, "min_initial_interior_mass_fraction"), sc.min_initial_interior_mass_fraction);
+    sc.min_interior_area_fraction = as_number(get_member(root, "min_interior_area_fraction"), sc.min_interior_area_fraction);
     sc.stability_warmup_steps = as_int(get_member(root, "stability_warmup_steps"), sc.stability_warmup_steps);
+    sc.interior_drift_hard_fail = as_bool(get_member(root, "interior_drift_hard_fail"), sc.interior_drift_hard_fail);
     sc.auto_pause_on_instability = as_bool(get_member(root, "auto_pause_on_instability"), sc.auto_pause_on_instability);
 
     sc.boxes.clear();
@@ -351,8 +361,13 @@ void from_simulation(const sim::Simulation& srcSim, Scene& s) {
     s.cap_ratio = srcSim.pfield.cap_ratio;
     s.cap_strength = srcSim.pfield.cap_strength;
     s.rel_mass_drift_tol = srcSim.stability.rel_mass_drift_tol;
+    s.rel_cap_mass_growth_tol = srcSim.stability.rel_cap_mass_growth_tol;
     s.rel_interior_mass_drift_tol = srcSim.stability.rel_interior_mass_drift_tol;
+    s.interior_mass_drift_vs_total_tol = srcSim.stability.interior_mass_drift_vs_total_tol;
+    s.min_initial_interior_mass_fraction = srcSim.stability.min_initial_interior_mass_fraction;
+    s.min_interior_area_fraction = srcSim.stability.min_interior_area_fraction;
     s.stability_warmup_steps = srcSim.stability.warmup_steps;
+    s.interior_drift_hard_fail = srcSim.stability.interior_drift_hard_fail;
     s.auto_pause_on_instability = srcSim.stability.auto_pause_on_instability;
     s.boxes.clear();
     s.wells.clear();
@@ -382,8 +397,13 @@ void to_simulation(const Scene& s, sim::Simulation& dstSim) {
     dstSim.pfield.cap_ratio = s.cap_ratio;
     dstSim.pfield.cap_strength = s.cap_strength;
     dstSim.stability.rel_mass_drift_tol = s.rel_mass_drift_tol;
+    dstSim.stability.rel_cap_mass_growth_tol = s.rel_cap_mass_growth_tol;
     dstSim.stability.rel_interior_mass_drift_tol = s.rel_interior_mass_drift_tol;
+    dstSim.stability.interior_mass_drift_vs_total_tol = s.interior_mass_drift_vs_total_tol;
+    dstSim.stability.min_initial_interior_mass_fraction = s.min_initial_interior_mass_fraction;
+    dstSim.stability.min_interior_area_fraction = s.min_interior_area_fraction;
     dstSim.stability.warmup_steps = s.stability_warmup_steps;
+    dstSim.stability.interior_drift_hard_fail = s.interior_drift_hard_fail;
     dstSim.stability.auto_pause_on_instability = s.auto_pause_on_instability;
     dstSim.pfield.build(dstSim.V);
     dstSim.packets.clear();
@@ -417,12 +437,21 @@ int run_example_cli(const std::string& scene_path) {
     std::cout << "Mass=" << M << " Left=" << L << " Right=" << R
               << " Interior=" << diag.current_interior_mass
               << " Drift=" << diag.rel_mass_drift
-              << " InteriorDrift=" << diag.rel_interior_mass_drift << "\n";
+              << " InteriorDrift=" << diag.rel_interior_mass_drift
+              << " InteriorDriftVsTotal=" << diag.rel_interior_mass_drift_vs_total << "\n";
+    if (diag.warning) {
+        std::cout << "Stability=WARNING reason=\"" << diag.warning_reason << "\"\n";
+    }
+    if (!diag.interior_guard_active) {
+        std::cout << "InteriorGuard=DISABLED reason=\"" << diag.interior_guard_reason << "\"\n";
+    }
     if (diag.unstable) {
         std::cout << "Stability=UNSTABLE reason=\"" << diag.reason << "\"\n";
         return 3;
     }
-    std::cout << "Stability=OK\n";
+    if (!diag.warning) {
+        std::cout << "Stability=OK\n";
+    }
     return 0;
 }
 

@@ -180,6 +180,7 @@ struct AppState {
     bool fieldDirty{true};
     bool potentialDirtyDrag{false};
     bool lastUnstable{false};
+    bool lastWarning{false};
 };
 
 static void load_default_doubleslit_scene(AppState& app);
@@ -516,76 +517,71 @@ static void render_field_to_rgba(const sim::Simulation& sim, std::vector<unsigne
     ui::render_field_to_rgba(sim, outRGBA, showPotential, view, normalizeView);
 }
 
-static void load_default_twowall_scene(AppState& app) {
-    ui::presets::load_default_twowall_scene(app.sim);
+static void mark_scene_changed(AppState& app) {
     selection_clear(app);
     app.fieldDirty = true;
+    app.lastUnstable = false;
+    app.lastWarning = false;
+}
+
+static void load_default_twowall_scene(AppState& app) {
+    ui::presets::load_default_twowall_scene(app.sim);
+    mark_scene_changed(app);
 }
 
 static void load_default_doubleslit_scene(AppState& app) {
     ui::presets::load_default_doubleslit_scene(app.sim);
-    selection_clear(app);
-    app.fieldDirty = true;
+    mark_scene_changed(app);
 }
 
 static void load_default_doubleslit2_scene(AppState& app) {
     ui::presets::load_default_doubleslit2_scene(app.sim);
-    selection_clear(app);
-    app.fieldDirty = true;
+    mark_scene_changed(app);
 }
 
 static void load_counterpropagating_scene(AppState& app) {
     ui::presets::load_counterpropagating_scene(app.sim);
-    selection_clear(app);
-    app.fieldDirty = true;
+    mark_scene_changed(app);
 }
 
 static void load_waveguide_scene(AppState& app) {
     ui::presets::load_waveguide_scene(app.sim);
-    selection_clear(app);
-    app.fieldDirty = true;
+    mark_scene_changed(app);
 }
 
 static void load_trap_scene(AppState& app) {
     ui::presets::load_trap_scene(app.sim);
-    selection_clear(app);
-    app.fieldDirty = true;
+    mark_scene_changed(app);
 }
 
 static void load_central_well_scene(AppState& app) {
     ui::presets::load_central_well_scene(app.sim);
-    selection_clear(app);
-    app.fieldDirty = true;
+    mark_scene_changed(app);
 }
 
 static void load_central_well_2_scene(AppState& app) {
     ui::presets::load_central_well_2_scene(app.sim);
-    selection_clear(app);
-    app.fieldDirty = true;
+    mark_scene_changed(app);
 }
 
 static void load_central_well_3_scene(AppState& app) {
     ui::presets::load_central_well_3_scene(app.sim);
-    selection_clear(app);
-    app.fieldDirty = true;
+    mark_scene_changed(app);
 }
 
 static void load_well_lattice_scene(AppState& app) {
     ui::presets::load_well_lattice_scene(app.sim);
-    selection_clear(app);
-    app.fieldDirty = true;
+    mark_scene_changed(app);
 }
 
 static void load_ring_resonator_scene(AppState& app) {
     ui::presets::load_ring_resonator_scene(app.sim);
-    selection_clear(app);
-    app.fieldDirty = true;
+    mark_scene_changed(app);
 }
 
 static void load_barrier_gauntlet_scene(AppState& app) {
     ui::presets::load_barrier_gauntlet_scene(app.sim);
-    selection_clear(app);
-    app.fieldDirty = true;
+    mark_scene_changed(app);
 }
 
 static std::filesystem::path default_screenshot_path() {
@@ -919,13 +915,19 @@ static void draw_settings(AppState& app) {
     }
 
     const auto& diag = app.sim.diagnostics;
-    ImGui::Text("Mass: %.6f", diag.current_mass);
+    ImGui::Text("Mass: %.6f  Drift: %.3g", diag.current_mass, diag.rel_mass_drift);
     ImGui::Text("Left: %.6f  Right: %.6f", diag.left_mass, diag.right_mass);
     ImGui::Text("Interior mass: %.6f  Drift: %.3g", diag.current_interior_mass, diag.rel_interior_mass_drift);
+    ImGui::Text("Interior drift vs total: %.3g", diag.rel_interior_mass_drift_vs_total);
     if (diag.unstable) {
         ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.35f, 1.0f), "Instability detected: %s", diag.reason.c_str());
+    } else if (diag.warning) {
+        ImGui::TextColored(ImVec4(1.0f, 0.78f, 0.35f, 1.0f), "Stability warning: %s", diag.warning_reason.c_str());
     } else {
         ImGui::TextColored(ImVec4(0.35f, 0.9f, 0.5f, 1.0f), "Stability: OK");
+    }
+    if (!diag.interior_guard_active) {
+        ImGui::TextDisabled("Interior guard: %s", diag.interior_guard_reason.c_str());
     }
     ImGui::Separator();
 
@@ -1013,25 +1015,66 @@ static void draw_settings(AppState& app) {
     }
 
     if (ImGui::CollapsingHeader("Stability Guard", ImGuiTreeNodeFlags_DefaultOpen)) {
-        double driftMin = 1e-4;
-        double driftMax = 0.25;
-        slider_block("Mass drift tolerance", "##mass_drift_tol", ImGuiDataType_Double,
-                     &app.sim.stability.rel_mass_drift_tol, &driftMin, &driftMax, "%.4f", ImGuiSliderFlags_Logarithmic,
-                     "Relative total-mass drift allowed before warning.");
-        slider_block("Interior drift tolerance", "##interior_drift_tol", ImGuiDataType_Double,
-                     &app.sim.stability.rel_interior_mass_drift_tol, &driftMin, &driftMax, "%.4f", ImGuiSliderFlags_Logarithmic,
-                     "Relative mass drift in the non-CAP interior.");
+        bool guardChanged = false;
+
+        double totalDriftMin = 1e-4;
+        double totalDriftMax = 0.25;
+        guardChanged |= slider_block("Mass drift tolerance (CAP off)", "##mass_drift_tol", ImGuiDataType_Double,
+                                     &app.sim.stability.rel_mass_drift_tol, &totalDriftMin, &totalDriftMax, "%.4f", ImGuiSliderFlags_Logarithmic,
+                                     "Relative total-mass drift tolerance when CAP is disabled.");
+
+        double capGrowthMin = 1e-6;
+        double capGrowthMax = 0.1;
+        guardChanged |= slider_block("Mass growth tolerance (CAP on)", "##cap_growth_tol", ImGuiDataType_Double,
+                                     &app.sim.stability.rel_cap_mass_growth_tol, &capGrowthMin, &capGrowthMax, "%.5f", ImGuiSliderFlags_Logarithmic,
+                                     "Allowed relative mass growth with CAP enabled. Decay is expected and not flagged.");
+
+        double interiorRelMin = 1e-3;
+        double interiorRelMax = 20.0;
+        guardChanged |= slider_block("Interior drift tolerance (relative)", "##interior_drift_tol", ImGuiDataType_Double,
+                                     &app.sim.stability.rel_interior_mass_drift_tol, &interiorRelMin, &interiorRelMax, "%.3f", ImGuiSliderFlags_Logarithmic,
+                                     "Relative interior drift versus initial interior mass.");
+
+        double interiorVsTotalMin = 1e-4;
+        double interiorVsTotalMax = 1.0;
+        guardChanged |= slider_block("Interior drift vs total tolerance", "##interior_vs_total_tol", ImGuiDataType_Double,
+                                     &app.sim.stability.interior_mass_drift_vs_total_tol, &interiorVsTotalMin, &interiorVsTotalMax, "%.4f", ImGuiSliderFlags_Logarithmic,
+                                     "Absolute interior drift normalized by initial total mass.");
+
+        double minInteriorFractionMin = 0.0;
+        double minInteriorFractionMax = 0.5;
+        guardChanged |= slider_block("Min initial interior mass fraction", "##min_initial_interior_fraction", ImGuiDataType_Double,
+                                     &app.sim.stability.min_initial_interior_mass_fraction, &minInteriorFractionMin, &minInteriorFractionMax, "%.3f",
+                                     0, "If interior baseline mass is below this fraction of total mass, interior guard is disabled.");
+
+        double minInteriorAreaMin = 0.0;
+        double minInteriorAreaMax = 0.5;
+        guardChanged |= slider_block("Min interior area fraction", "##min_interior_area", ImGuiDataType_Double,
+                                     &app.sim.stability.min_interior_area_fraction, &minInteriorAreaMin, &minInteriorAreaMax, "%.3f",
+                                     0, "Disable interior guard when the geometric interior region is too small.");
+
         int warmMin = 0;
-        int warmMax = 100;
-        slider_block("Warmup steps", "##stability_warmup", ImGuiDataType_S32,
-                     &app.sim.stability.warmup_steps, &warmMin, &warmMax, "%d",
-                     0, "Initial steps ignored by instability checks.");
-        ImGui::Checkbox("Auto-pause on instability", &app.sim.stability.auto_pause_on_instability);
+        int warmMax = 400;
+        guardChanged |= slider_block("Warmup steps", "##stability_warmup", ImGuiDataType_S32,
+                                     &app.sim.stability.warmup_steps, &warmMin, &warmMax, "%d",
+                                     0, "Initial steps ignored by instability checks.");
+
+        guardChanged |= ImGui::Checkbox("Strict interior drift hard-fail", &app.sim.stability.interior_drift_hard_fail);
+        ImGui::SameLine();
+        help_marker("If enabled, interior drift exceeding tolerance becomes UNSTABLE instead of WARNING.");
+
+        guardChanged |= ImGui::Checkbox("Auto-pause on instability", &app.sim.stability.auto_pause_on_instability);
         ImGui::SameLine();
         help_marker("Pause playback when instability is detected.");
+
+        if (guardChanged) {
+            app.sim.update_diagnostics(false);
+        }
+
         if (ImGui::Button("Re-baseline diagnostics")) {
             app.sim.refresh_diagnostics_baseline();
             app.lastUnstable = false;
+            app.lastWarning = false;
         }
     }
 
@@ -1086,8 +1129,7 @@ static void draw_settings(AppState& app) {
             if (io::load_scene(p.string(), scene)) {
                 io::to_simulation(scene, app.sim);
                 app.sceneLastLoadDir = p.parent_path();
-                selection_clear(app);
-                app.fieldDirty = true;
+                mark_scene_changed(app);
                 push_toast(app, std::string("Loaded scene from ") + p.string(), 2.5f);
             } else {
                 push_toast(app, std::string("Failed to load scene: ") + p.string(), 3.0f);
@@ -1127,8 +1169,7 @@ static void draw_settings(AppState& app) {
                 io::Scene scene;
                 if (io::load_scene(p.string(), scene)) {
                     io::to_simulation(scene, app.sim);
-                    selection_clear(app);
-                    app.fieldDirty = true;
+                    mark_scene_changed(app);
                     push_toast(app, std::string("Loaded scene from ") + p.string(), 2.5f);
                 } else {
                     push_toast(app, std::string("Failed to load scene: ") + p.string(), 3.0f);
@@ -2545,6 +2586,13 @@ int run_gui(GLFWwindow* window) {
             app.lastUnstable = true;
         } else if (!app.sim.diagnostics.unstable) {
             app.lastUnstable = false;
+        }
+
+        if (!app.sim.diagnostics.unstable && app.sim.diagnostics.warning && !app.lastWarning) {
+            push_toast(app, std::string("Stability warning: ") + app.sim.diagnostics.warning_reason, 3.5f);
+            app.lastWarning = true;
+        } else if (!app.sim.diagnostics.warning || app.sim.diagnostics.unstable) {
+            app.lastWarning = false;
         }
 
         ImGui::Render();

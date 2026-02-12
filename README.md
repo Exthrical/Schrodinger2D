@@ -13,7 +13,7 @@ Highlights
 - GUI via Dear ImGui (bundled) + GLFW + OpenGL2 backend. If GLFW/OpenGL are not found, the project builds in headless mode and can run the smoke example via `--example`.
 - Place Gaussian wavepackets by click+drag (drag sets initial momentum). Place rectangular potentials by click+drag.
 - Start/Pause/Step, change `dt`, steps-per-frame, grid resolution, reset scene, and toggle view overlays (real/imag/magnitude/phase or combined mag+phase).
-- Stability diagnostics with mass drift checks (including interior mass), NaN/Inf detection, optional auto-pause, and CLI stability reporting.
+- Stability diagnostics with hard-stop checks (NaN/Inf and nonphysical mass growth), interior drift warnings by default, optional strict interior fail mode, and CLI stability reporting.
 - Scene save/load (JSON) with direct path fields on all platforms and native dialogs on Windows.
 - Eigenvalue finder: solve low-lying eigenmodes of the current Hamiltonian, browse energies, and load eigenstates directly into the simulation.
 
@@ -50,7 +50,7 @@ Build
 Run
 - GUI (if available): `./build/Release/Schrodinger2D.exe`
 - Headless smoke example: `./build/Schrodinger2D --example examples/smoke_example.json`
-  - Prints diagnostics: mass, left/right split, interior mass, drift metrics, and stability status.
+  - Prints diagnostics: mass, left/right split, interior mass, drift metrics, interior-guard status, and stability status.
 
 Controls (GUI)
 - Space: start/pause
@@ -59,7 +59,7 @@ Controls (GUI)
 - Tool modes: Select/Move Boxes, Add Packet (drag = momentum), Add Box (drag = rectangle)
 - Sliders: `dt`, steps/frame, grid `Nx, Ny`, CAP strength/ratio, packet params (amplitude, width `sigma`, momentum `k`), box height
 - View: Magnitude+Phase (HSV), Real, Imag, Magnitude, Phase. Potential overlay can be toggled.
-- Stability Guard panel: tolerances, warmup steps, auto-pause toggle, and diagnostic re-baselining.
+- Stability Guard panel: CAP-on growth tolerance, CAP-off mass drift tolerance, interior warning thresholds, strict interior fail toggle, warmup, and re-baselining.
 
 Numerics
 - Equation: i ψ_t = −(1/2) Δψ + V ψ
