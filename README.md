@@ -22,14 +22,30 @@ Highlights
 Build
 - Requirements
   - CMake ≥ 3.16
-  - A C++17 compiler
+  - A C++17 compiler (e.g., GCC, Clang, MSVC)
   - Optional GUI: OpenGL and GLFW3
-    - Linux: `sudo apt install libglfw3-dev` (Ubuntu/Debian) or equivalent
-    - Windows: via vcpkg `vcpkg install glfw3` and CMake will detect `glfw3 CONFIG`
+    - **Linux**: `sudo apt install libglfw3-dev` (Ubuntu/Debian) or equivalent
+    - **Windows**: Install via `vcpkg` (Recommended):
+      1. Install [vcpkg](https://github.com/microsoft/vcpkg)
+      2. Run `vcpkg install glfw3:x64-windows`
+      3. Note your vcpkg installation path (typically `C:/vcpkg` or `C:/src/vcpkg`)
+
 - Steps
   - `cd Schrodinger2D`
-  - `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release`
-  - `cmake --build build --config Release`
+
+  - **Linux / macOS (System Dependencies)**
+    - `cmake -S . -B build -DCMAKE_BUILD_TYPE=Release`
+    - `cmake --build build --config Release`
+
+  - **Windows (Visual Studio + vcpkg)**
+    - Configure with the vcpkg toolchain (adjust the path to `vcpkg.cmake` if your installation is different):
+      ```powershell
+      cmake -S . -B build -G "Visual Studio 17 2022" -A x64 -DCMAKE_TOOLCHAIN_FILE="C:/vcpkg/scripts/buildsystems/vcpkg.cmake" -DCMAKE_BUILD_TYPE=Release
+      ```
+    - Build:
+      ```powershell
+      cmake --build build --config Release
+      ```
 
 Run
 - GUI (if available): `./build/Release/Schrodinger2D.exe`
