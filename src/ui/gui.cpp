@@ -28,6 +28,7 @@
 #include <fstream>
 #include <cstring>
 #include <cstdio>
+#include <iostream>
 
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -46,6 +47,16 @@ static constexpr float kMomentumUVScale = 0.004f;
 static constexpr float kWellHandleRadiusPx = 10.0f;
 static constexpr float kDragThresholdPx = 4.0f;
 static constexpr float kBoxEdgePickPx = 6.0f;
+
+static constexpr double kCapPresetHardWallStrength = 1.0;
+static constexpr double kCapPresetSoftStrength = 800.0;
+static constexpr double kCapPresetOpenStrength = 1500.0;
+static constexpr double kCapSliderMinHardWall = 0.0;
+static constexpr double kCapSliderMaxHardWall = 50.0;
+static constexpr double kCapSliderMinSoft = 200.0;
+static constexpr double kCapSliderMaxSoft = 1500.0;
+static constexpr double kCapSliderMinOpen = 500.0;
+static constexpr double kCapSliderMaxOpen = 3000.0;
 
 
 struct AppState {
@@ -130,6 +141,10 @@ struct AppState {
     ImVec2 wellEditorPos{0,0};
 
     bool showStyleEditor{false};
+    bool showPreferences{false};
+    bool autoDisableNormalizeOnCapPreset{true};
+    double capStrengthSliderMin{kCapSliderMinHardWall};
+    double capStrengthSliderMax{kCapSliderMaxHardWall};
     struct StyleTokens {
         float cornerRounding{2.0f};
         float borderWeight{1.0f};
@@ -522,6 +537,57 @@ static void mark_scene_changed(AppState& app) {
     app.fieldDirty = true;
     app.lastUnstable = false;
     app.lastWarning = false;
+}
+
+static void set_cap_slider_range(AppState& app, double minValue, double maxValue) {
+    const double lo = std::max(0.0, std::min(minValue, maxValue));
+    const double hi = std::max(lo + 1.0, std::max(minValue, maxValue));
+    app.capStrengthSliderMin = lo;
+    app.capStrengthSliderMax = hi;
+}
+
+static void ensure_cap_slider_covers_current(AppState& app) {
+    const double value = app.sim.pfield.cap_strength;
+    if (value >= app.capStrengthSliderMin && value <= app.capStrengthSliderMax) {
+        return;
+    }
+    const double span = std::max(25.0, std::fabs(value) * 0.25);
+    set_cap_slider_range(app, value - span, value + span);
+}
+
+static void apply_cap_preset(AppState& app,
+                             const char* label,
+                             double strength,
+                             double sliderMin,
+                             double sliderMax,
+                             bool absorptiveMode) {
+    app.sim.pfield.cap_strength = strength;
+    set_cap_slider_range(app, sliderMin, sliderMax);
+
+    bool normalizeDisabled = false;
+    if (absorptiveMode && app.autoDisableNormalizeOnCapPreset && app.normalizeView) {
+        app.normalizeView = false;
+        normalizeDisabled = true;
+    }
+
+    app.sim.pfield.build(app.sim.V);
+    app.sim.refresh_diagnostics_baseline();
+    app.fieldDirty = true;
+
+    std::ostringstream toast;
+    toast << "CAP preset: " << label << " (strength " << std::fixed << std::setprecision(0) << strength << ")";
+    if (normalizeDisabled) {
+        toast << " | Normalize View off";
+    }
+    push_toast(app, toast.str(), 3.0f);
+
+    std::cout << "[CAP] Applied preset '" << label << "' strength=" << strength
+              << " slider_min=" << app.capStrengthSliderMin
+              << " slider_max=" << app.capStrengthSliderMax;
+    if (absorptiveMode && app.autoDisableNormalizeOnCapPreset) {
+        std::cout << " normalize_view=" << (normalizeDisabled ? "off(auto)" : "off(already)");
+    }
+    std::cout << "\n";
 }
 
 static void load_default_twowall_scene(AppState& app) {
@@ -980,9 +1046,36 @@ static void draw_settings(AppState& app) {
     }
 
     if (ImGui::CollapsingHeader("Potential Field", ImGuiTreeNodeFlags_DefaultOpen)) {
-        double vmin = 0.0, vmax = 5.0;
-        bool changed = slider_block("CAP strength", "##cap_strength", ImGuiDataType_Double, &app.sim.pfield.cap_strength, &vmin, &vmax, "%.2f",
-                                   0, "Absorption gain near boundaries.");
+        ImGui::TextUnformatted("CAP presets");
+        if (ImGui::Button("Hard Wall##cap_preset")) {
+            apply_cap_preset(app, "Hard Wall", kCapPresetHardWallStrength,
+                             kCapSliderMinHardWall, kCapSliderMaxHardWall, false);
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+            ImGui::SetTooltip("Reflective boundary mode. Low CAP keeps the particle-in-a-box feel and allows strong edge reflections.");
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Soft CAP##cap_preset")) {
+            apply_cap_preset(app, "Soft CAP", kCapPresetSoftStrength,
+                             kCapSliderMinSoft, kCapSliderMaxSoft, true);
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+            ImGui::SetTooltip("Moderate absorbing CAP. Good for packets with kx/ky in the tens while preserving visual structure.");
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Open Space##cap_preset")) {
+            apply_cap_preset(app, "Open Space", kCapPresetOpenStrength,
+                             kCapSliderMinOpen, kCapSliderMaxOpen, true);
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_DelayShort)) {
+            ImGui::SetTooltip("Strong absorbing CAP to minimize wall reflections. Tune up toward ~2500 for very high-energy packets.");
+        }
+        ensure_cap_slider_covers_current(app);
+        ImGui::TextDisabled("Strength slider range: %.0f - %.0f", app.capStrengthSliderMin, app.capStrengthSliderMax);
+        double vmin = app.capStrengthSliderMin;
+        double vmax = app.capStrengthSliderMax;
+        bool changed = slider_block("CAP strength", "##cap_strength", ImGuiDataType_Double, &app.sim.pfield.cap_strength, &vmin, &vmax, "%.1f",
+                                    0, "Absorption gain near boundaries.");
         vmin = 0.02; vmax = 0.25;
         changed |= slider_block("CAP ratio", "##cap_ratio", ImGuiDataType_Double, &app.sim.pfield.cap_ratio, &vmin, &vmax, "%.3f",
                                 0, "Fraction of each edge used as CAP sponge.");
@@ -2176,6 +2269,22 @@ static void draw_style_editor(AppState& app) {
     ImGui::End();
 }
 
+static void draw_preferences_window(AppState& app) {
+    if (!app.showPreferences)
+        return;
+
+    ImGui::SetNextWindowSize(ImVec2(460.0f, 0.0f), ImGuiCond_FirstUseEver);
+    if (ImGui::Begin("Preferences", &app.showPreferences)) {
+        ImGui::TextUnformatted("CAP Presets");
+        ImGui::Separator();
+        ImGui::Checkbox("Auto-disable Normalize View on CAP preset", &app.autoDisableNormalizeOnCapPreset);
+        ImGui::SameLine();
+        help_marker("When Soft CAP or Open Space preset is applied, Normalize View is turned off so absorption/reflections are easier to judge.");
+        ImGui::TextDisabled("CAP preset applications are also logged to stdout.");
+    }
+    ImGui::End();
+}
+
 static void draw_toast_overlay(AppState& app) {
     if (app.toastTimer <= 0.0f || app.toastMessage.empty())
         return;
@@ -2225,6 +2334,9 @@ static void draw_top_bar(AppState& app, GLFWwindow* window, float& out_height, I
     if (ImGui::BeginMenu("File")) {
         if (ImGui::MenuItem("Screenshot", "Ctrl+S")) {
             take_screenshot(app);
+        }
+        if (ImGui::MenuItem("Preferences...", nullptr, app.showPreferences)) {
+            app.showPreferences = true;
         }
         ImGui::Separator();
         if (ImGui::MenuItem("Exit")) {
@@ -2574,6 +2686,7 @@ int run_gui(GLFWwindow* window) {
         thick_segment(rightSplitBottom - ImVec2(junctionHalf, 0.0f), rightSplitBottom + ImVec2(junctionHalf, 0.0f));
 
         draw_style_editor(app);
+        draw_preferences_window(app);
         draw_toast_overlay(app);
 
         if (app.sim.running) {

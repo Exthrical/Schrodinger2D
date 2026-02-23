@@ -58,6 +58,7 @@ Controls (GUI)
 - Delete: delete selected box
 - Tool modes: Select/Move Boxes, Add Packet (drag = momentum), Add Box (drag = rectangle)
 - Sliders: `dt`, steps/frame, grid `Nx, Ny`, CAP strength/ratio, packet params (amplitude, width `sigma`, momentum `k`), box height
+- CAP presets in Potential Field: `Hard Wall` (reflective), `Soft CAP`, and `Open Space` (absorbing), with a preference to auto-disable Normalize View when applying absorptive presets.
 - View: Magnitude+Phase (HSV), Real, Imag, Magnitude, Phase. Potential overlay can be toggled.
 - Stability Guard panel: CAP-on growth tolerance, CAP-off mass drift tolerance, interior warning thresholds, strict interior fail toggle, warmup, and re-baselining.
 
